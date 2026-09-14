@@ -1,0 +1,21 @@
+services:
+  portal:
+    build: .
+    image: agent-portal:local
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3005}:3005"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PORT: "3005"
+      PORTAL_MODE: "${PORTAL_MODE:-demo}"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

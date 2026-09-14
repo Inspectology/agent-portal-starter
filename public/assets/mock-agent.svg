@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Mock agent portrait</title>
+  <desc id="desc">Fictional real estate agent portrait for demo data.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f7d66d"/>
+      <stop offset="1" stop-color="#1f2937"/>
+    </linearGradient>
+    <linearGradient id="shirt" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#334155"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="128" fill="url(#bg)"/>
+  <circle cx="256" cy="182" r="92" fill="#8b5e3c"/>
+  <path d="M152 177c4-77 53-125 111-125 61 0 101 38 105 108-26-35-65-50-116-50-43 0-75 20-100 67z" fill="#26201c"/>
+  <path d="M169 208c23 54 57 82 92 82 38 0 70-31 88-85 9 7 20 6 28-2 14-14 10-43-8-49-8-3-17 1-22 8-21-42-52-62-91-62-37 0-68 20-91 61-6-6-15-9-23-5-17 8-18 36-4 50 9 9 21 10 31 2z" fill="#b97a4d"/>
+  <path d="M189 338c32-24 75-36 128-30 49 6 88 25 117 58 23 26 35 60 35 102H43c0-50 15-88 44-114 25-22 59-35 102-16z" fill="url(#shirt)"/>
+  <path d="M191 321c12 40 34 60 66 60 31 0 53-20 65-60-18-10-39-15-64-15-26 0-48 5-67 15z" fill="#f8fafc"/>
+  <path d="M219 332l39 50 39-50c-23-8-49-8-78 0z" fill="#e2e8f0"/>
+  <circle cx="222" cy="193" r="8" fill="#1f2937"/>
+  <circle cx="295" cy="193" r="8" fill="#1f2937"/>
+  <path d="M232 242c18 16 40 16 58 0" fill="none" stroke="#4b2e20" stroke-width="9" stroke-linecap="round"/>
+  <path d="M203 170c13-10 29-11 46-2M273 168c20-9 37-7 52 5" fill="none" stroke="#2b211c" stroke-width="8" stroke-linecap="round"/>
+</svg>

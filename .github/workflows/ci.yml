@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - name: Run Gitleaks full-history release gate with redaction
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+          GITLEAKS_VERSION: 8.24.3
+          GITLEAKS_ENABLE_COMMENTS: 'false'
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'false'
+          GITLEAKS_ENABLE_SUMMARY: 'false'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run check:syntax
+      - run: npm test
+      - run: npm run scan:public
+      - run: npm audit --omit=dev
+      - run: npm pack --dry-run
+      - run: docker build -t agent-portal:ci .
+      - name: Exercise container as its configured non-root user
+        run: |
+          test "$(docker run --rm --entrypoint id agent-portal:ci -u)" != "0"
+          container="$(docker run -d --rm -p 127.0.0.1::3005 agent-portal:ci)"
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+          port="$(docker inspect --format '{{(index (index .NetworkSettings.Ports "3005/tcp") 0).HostPort}}' "$container")"
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent "http://127.0.0.1:${port}/api/health" | grep -q '"status":"ok"'; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs "$container"
+          exit 1

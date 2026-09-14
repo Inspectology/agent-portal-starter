@@ -1,0 +1,171 @@
+{
+  "company": {
+    "appName": "Agent Portal",
+    "name": "Example Home Inspections",
+    "tagline": "Example portal for confident home decisions",
+    "license": "License HI00000",
+    "phone": "(555) 014-0720",
+    "website": "https://example.com",
+    "bookingUrl": "https://example.com/book",
+    "whatsappUrl": "https://example.com/message",
+    "brand": {
+      "primary": "#f5b819",
+      "accentText": "#765400",
+      "ink": "#232323",
+      "muted": "#6f6f68",
+      "surface": "#ffffff",
+      "background": "#fafaf7",
+      "border": "#e6e2d9",
+      "success": "#208c5a",
+      "focus": "#2563eb"
+    }
+  },
+  "agent": {
+    "uuid": "demo-platinum-partner",
+    "connectionId": "demo",
+    "firstName": "Taylor",
+    "lastName": "Morgan",
+    "email": "taylor.morgan@example.com",
+    "phone": "(555) 019-2044",
+    "agency": "Example Realty Group",
+    "city": "Sample City",
+    "state": "FL",
+    "photoUrl": "/assets/mock-agent.svg"
+  },
+  "stats": {
+    "totalInspections": 32,
+    "buyingInspections": 27,
+    "sellingInspections": 5,
+    "firstInspection": "2023-04-12",
+    "lastInspection": "2026-07-10",
+    "overallCount": 112
+  },
+  "tier": {
+    "level": "platinum",
+    "label": "Platinum Partner",
+    "emoji": "diamond",
+    "percentile": 94
+  },
+  "inspections": [
+    {
+      "id": "demo-insp-1008",
+      "date": "2026-07-10",
+      "address": "Address Withheld - Sample Harbor",
+      "city": "Sample City",
+      "state": "FL",
+      "services": "Buyer Inspection + Wind Mitigation",
+      "inspector": "Alex Rivera",
+      "client": "Sample Buyer 10",
+      "status": "Report Published",
+      "published": true
+    },
+    {
+      "id": "demo-insp-1007",
+      "date": "2026-06-24",
+      "address": "Address Withheld - Sample Palm District",
+      "city": "Sample City",
+      "state": "FL",
+      "services": "4-Point + Wind Mitigation",
+      "inspector": "Jordan Lee",
+      "client": "Demo Buyer 09",
+      "status": "Report Published",
+      "published": true
+    },
+    {
+      "id": "demo-insp-1006",
+      "date": "2026-05-29",
+      "address": "Address Withheld - Mock Cypress Area",
+      "city": "Sample City",
+      "state": "FL",
+      "services": "Pre-Listing Inspection",
+      "inspector": "Alex Rivera",
+      "client": "Example Seller 08",
+      "status": "Report Published",
+      "published": true
+    },
+    {
+      "id": "demo-insp-1005",
+      "date": "2026-05-08",
+      "address": "Address Withheld - Sample Oak Area",
+      "city": "Sample City",
+      "state": "FL",
+      "services": "Buyer Inspection",
+      "inspector": "Jordan Lee",
+      "client": "Sample Buyer 07",
+      "status": "Report Published",
+      "published": true
+    },
+    {
+      "id": "demo-insp-1004",
+      "date": "2026-04-16",
+      "address": "Address Withheld - Demo Lakeside Area",
+      "city": "Sample City",
+      "state": "FL",
+      "services": "Buyer Inspection + Sewer Scope",
+      "inspector": "Alex Rivera",
+      "client": "Mock Buyer 06",
+      "status": "Report Published",
+      "published": true
+    },
+    {
+      "id": "demo-insp-1003",
+      "date": "2026-03-27",
+      "address": "Address Withheld - Example Magnolia Area",
+      "city": "Sample City",
+      "state": "FL",
+      "services": "New Construction Phase Inspection",
+      "inspector": "Jordan Lee",
+      "client": "Example Buyer 05",
+      "status": "Report Published",
+      "published": true
+    },
+    {
+      "id": "demo-insp-1002",
+      "date": "2026-02-11",
+      "address": "Address Withheld - Fictional Seabreeze Area",
+      "city": "Sample City",
+      "state": "FL",
+      "services": "Buyer Inspection + Pool Inspection",
+      "inspector": "Alex Rivera",
+      "client": "Demo Buyer 04",
+      "status": "Report Published",
+      "published": true
+    },
+    {
+      "id": "demo-insp-1001",
+      "date": "2026-01-19",
+      "address": "Address Withheld - Sample Pine Area",
+      "city": "Sample City",
+      "state": "FL",
+      "services": "Buyer Inspection",
+      "inspector": "Jordan Lee",
+      "client": "Sample Buyer 03",
+      "status": "Report Published",
+      "published": true
+    },
+    {
+      "id": "demo-insp-1000",
+      "date": "2025-12-08",
+      "address": "Address Withheld - Demo Garden Area",
+      "city": "Sample City",
+      "state": "FL",
+      "services": "4-Point + Wind Mitigation + WDO Add-On",
+      "inspector": "Alex Rivera",
+      "client": "Demo Buyer 02",
+      "status": "Report Published",
+      "published": true
+    },
+    {
+      "id": "demo-insp-0999",
+      "date": "2025-11-13",
+      "address": "Address Withheld - Mock Ridge Area",
+      "city": "Sample City",
+      "state": "FL",
+      "services": "Pre-Purchase Residential + Pool/Spa Add-On",
+      "inspector": "Jordan Lee",
+      "client": "Mock Buyer 01",
+      "status": "Report Published",
+      "published": true
+    }
+  ]
+}

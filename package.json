@@ -1,0 +1,40 @@
+{
+  "name": "spectora-agent-portal",
+  "version": "0.2.0",
+  "description": "Demo-first, privacy-minimized agent portal starter for Spectora-powered inspection companies.",
+  "private": true,
+  "main": "server.js",
+  "files": [
+    "server.js",
+    "public/",
+    "data/sample-agent.json",
+    "scripts/",
+    "docs/",
+    "Dockerfile",
+    "compose.yaml",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE",
+    "TRADEMARKS.md",
+    "SECURITY.md"
+  ],
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test",
+    "scan:public": "node scripts/public-safety-scan.js",
+    "create-link": "node scripts/create-portal-link.js",
+    "check:syntax": "node --check server.js && node --check public/app.js && node --check public/mode-copy.js && node --check scripts/create-portal-link.js && node --check scripts/public-safety-scan.js"
+  },
+  "keywords": [
+    "spectora",
+    "home-inspection",
+    "agent-portal"
+  ],
+  "author": "Agent Portal Contributors",
+  "license": "MIT",
+  "packageManager": "npm@10.9.7",
+  "engines": {
+    "node": ">=20"
+  }
+}
