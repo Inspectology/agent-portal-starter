@@ -525,7 +525,28 @@ function createServer(portal) {
 }
 
 loadEnvFile();
-const defaultPortal = createPortal({ log: () => {} });
+
+let defaultPortal;
+
+function getDefaultPortal() {
+  if (!defaultPortal) defaultPortal = createPortal({ log: () => {} });
+  return defaultPortal;
+}
+
+async function defaultHandler(req, res) {
+  try {
+    return await getDefaultPortal().handleRequest(req, res);
+  } catch (error) {
+    if (!res.headersSent) {
+      sendJson(res, 500, {
+        error: 'Portal configuration error',
+        detail: error?.message || 'Unknown startup error'
+      });
+    } else {
+      res.destroy?.();
+    }
+  }
+}
 
 if (require.main === module) {
   const portal = createPortal();
@@ -533,7 +554,7 @@ if (require.main === module) {
   server.listen(portal.config.port, () => console.log(`Agent Portal running at http://localhost:${portal.config.port} (${portal.config.mode} mode)`));
 }
 
-module.exports = defaultPortal.handleRequest;
+module.exports = defaultHandler;
 
 Object.assign(module.exports, {
   SECURITY_HEADERS,
@@ -546,7 +567,7 @@ Object.assign(module.exports, {
   readUpstreamJson,
   createPortal,
   createServer,
-  handleRequest: defaultPortal.handleRequest,
+  handleRequest: defaultHandler,
   readSampleAgent,
   mapInspection,
   loadEnvFile
