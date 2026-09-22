@@ -533,7 +533,9 @@ if (require.main === module) {
   server.listen(portal.config.port, () => console.log(`Agent Portal running at http://localhost:${portal.config.port} (${portal.config.mode} mode)`));
 }
 
-module.exports = {
+module.exports = defaultPortal.handleRequest;
+
+Object.assign(module.exports, {
   SECURITY_HEADERS,
   SPECTORA_ORIGIN,
   UpstreamHttpError,
@@ -548,4 +550,4 @@ module.exports = {
   readSampleAgent,
   mapInspection,
   loadEnvFile
-};
+});
