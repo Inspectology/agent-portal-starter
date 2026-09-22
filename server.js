@@ -85,7 +85,7 @@ function createConfig(env = process.env) {
   if (!['demo', 'live'].includes(mode)) throw new Error('PORTAL_MODE must be either demo or live');
   if (mode === 'live') {
     const missing = ['SPECTORA_API_KEY', 'SPECTORA_COMPANY_ID', 'PORTAL_SIGNING_SECRET'].filter(name => !env[name]);
-    if (missing.length) throw new Error('Live mode requires SPECTORA_API_KEY, SPECTORA_COMPANY_ID, and PORTAL_SIGNING_SECRET');
+    if (missing.length) throw new Error(`Live mode is missing: ${missing.join(', ')}`);
     if (Buffer.byteLength(env.PORTAL_SIGNING_SECRET, 'utf8') < 32) throw new Error('PORTAL_SIGNING_SECRET must be at least 32 bytes');
     validatedPositiveDecimalId(env.SPECTORA_COMPANY_ID, 'SPECTORA_COMPANY_ID');
   }
