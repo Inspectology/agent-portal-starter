@@ -495,6 +495,112 @@ function htmlToPlainText(html) {
     .trim();
 }
 
+function isAllowedSpectoraAssetHost(hostname) {
+  return hostname === 'reports.spectora.com' || hostname.endsWith('.spectora.com');
+}
+
+function fetchSpectoraPublicAsset(assetUrl, options = {}) {
+  const maxBytes = options.maxBytes || 3_000_000;
+  let url;
+  try { url = new URL(assetUrl); }
+  catch { return Promise.reject(authError('Invalid Spectora asset URL', 400)); }
+
+  if (url.protocol !== 'https:' || !isAllowedSpectoraAssetHost(url.hostname)) {
+    return Promise.reject(authError('Only public Spectora assets are allowed', 400));
+  }
+
+  return new Promise((resolve, reject) => {
+    const request = https.get(url, {
+      headers: {
+        Accept: 'application/javascript,text/javascript,text/plain,*/*',
+        'User-Agent': 'Inspectology-Agent-Dashboard/1.0'
+      },
+      timeout: 15_000
+    }, response => {
+      const statusCode = Number(response.statusCode || 0);
+
+      if (statusCode >= 300 && statusCode < 400 && response.headers.location) {
+        response.resume();
+        let next;
+        try { next = new URL(response.headers.location, url); }
+        catch { reject(new Error('Spectora asset returned an invalid redirect')); return; }
+        if (next.protocol !== 'https:' || !isAllowedSpectoraAssetHost(next.hostname)) {
+          reject(new Error('Spectora asset redirected outside approved Spectora hosts'));
+          return;
+        }
+        fetchSpectoraPublicAsset(next.href, options).then(resolve, reject);
+        return;
+      }
+
+      const chunks = [];
+      let bytes = 0;
+      response.on('data', chunk => {
+        bytes += chunk.length;
+        if (bytes > maxBytes) {
+          reject(new Error('Spectora asset exceeded size limit'));
+          response.destroy();
+          return;
+        }
+        chunks.push(chunk);
+      });
+      response.on('end', () => {
+        resolve({
+          statusCode,
+          contentType: String(response.headers['content-type'] || ''),
+          body: Buffer.concat(chunks).toString('utf8'),
+          finalUrl: url.href
+        });
+      });
+      response.on('error', reject);
+    });
+    request.on('timeout', () => request.destroy(new Error('Spectora asset request timed out')));
+    request.on('error', reject);
+  });
+}
+
+function extractScriptSources(html, baseUrl) {
+  const urls = [];
+  const seen = new Set();
+  const regex = /<script\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi;
+  let match;
+  while ((match = regex.exec(String(html || ''))) !== null) {
+    try {
+      const resolved = new URL(match[1], baseUrl);
+      if (!seen.has(resolved.href)) {
+        seen.add(resolved.href);
+        urls.push(resolved.href);
+      }
+    } catch {}
+  }
+  return urls;
+}
+
+function scanBundleEndpointCandidates(source) {
+  const text = String(source || '');
+  const candidates = new Set();
+
+  const absolute = /https:\/\/[^"'\s)]+/gi;
+  for (const match of text.matchAll(absolute)) {
+    const value = match[0].replace(/[\\,;]+$/, '');
+    if (/(spectora|api|graphql|report|inspection|viewer)/i.test(value)) candidates.add(value.slice(0, 240));
+    if (candidates.size >= 80) break;
+  }
+
+  const quotedPath = /["'`]([^"'\`]{1,220})["'`]/g;
+  for (const match of text.matchAll(quotedPath)) {
+    const value = match[1];
+    if (
+      value.startsWith('/') &&
+      /(api|graphql|report|inspection|viewer|section|comment|finding|summary)/i.test(value)
+    ) {
+      candidates.add(value);
+    }
+    if (candidates.size >= 80) break;
+  }
+
+  return [...candidates].slice(0, 80);
+}
+
 function createRateLimiter(config, nowMs) {
   const buckets = new Map();
   return key => {
@@ -789,6 +895,59 @@ function createPortal(options = {}) {
             containsAddress: /948\s+Glenangus\s+Dr/i.test(plainText),
             containsInspectionTerms: /(roof|electrical|plumbing|foundation|inspection|summary|defect)/i.test(plainText),
             textPreview: plainText.slice(0, 1200)
+          });
+          status = 200;
+          return;
+        }
+        if (req.method === 'POST' && pathname === '/api/admin/report-network-test') {
+          const body = await readJsonBody(req);
+          const reportUrl = String(body.url || '').trim();
+          const page = await fetchPublishedSpectoraReport(reportUrl);
+
+          const scriptSources = extractScriptSources(page.body, page.finalUrl);
+          const scannedScripts = [];
+          const endpointCandidates = new Set();
+
+          for (const scriptUrl of scriptSources.slice(0, 6)) {
+            let parsed;
+            try { parsed = new URL(scriptUrl); }
+            catch { continue; }
+
+            if (parsed.protocol !== 'https:' || !isAllowedSpectoraAssetHost(parsed.hostname)) {
+              scannedScripts.push({
+                url: scriptUrl,
+                scanned: false,
+                reason: 'External non-Spectora script'
+              });
+              continue;
+            }
+
+            try {
+              const asset = await fetchSpectoraPublicAsset(scriptUrl);
+              const candidates = scanBundleEndpointCandidates(asset.body);
+              for (const candidate of candidates) endpointCandidates.add(candidate);
+              scannedScripts.push({
+                url: scriptUrl,
+                scanned: true,
+                statusCode: asset.statusCode,
+                contentType: asset.contentType,
+                bytes: Buffer.byteLength(asset.body, 'utf8'),
+                candidateCount: candidates.length
+              });
+            } catch (error) {
+              scannedScripts.push({
+                url: scriptUrl,
+                scanned: false,
+                reason: error.message
+              });
+            }
+          }
+
+          sendJson(res, 200, {
+            reportStatus: page.statusCode,
+            scriptSources,
+            scannedScripts,
+            endpointCandidates: [...endpointCandidates].slice(0, 80)
           });
           status = 200;
           return;
