@@ -7,21 +7,38 @@ function pathConnectionId() {
   return location.pathname.match(/\/agent\/([^/]+)/)?.[1] || '';
 }
 
+function connectionIdFromGrant(grant) {
+  if (!grant || typeof grant !== 'string') return '';
+  try {
+    const payloadPart = grant.split('.')[0];
+    if (!payloadPart) return '';
+    const normalized = payloadPart.replace(/-/g, '+').replace(/_/g, '/');
+    const padding = '='.repeat((4 - (normalized.length % 4)) % 4);
+    const payload = JSON.parse(atob(normalized + padding));
+    return /^[1-9][0-9]*$/.test(String(payload.connectionId || '')) ? String(payload.connectionId) : '';
+  } catch {
+    return '';
+  }
+}
+
 function consumeGrant() {
   const fragment = new URLSearchParams(location.hash.slice(1));
   const pathId = pathConnectionId();
+  const fragmentGrant = fragment.get('grant') || '';
+  const legacyGrant = sessionStorage.getItem('portalGrant') || '';
   const rememberedId = localStorage.getItem('lastConnectionId') || '';
-  const connectionId = pathId || rememberedId;
-  const grant = fragment.get('grant');
+  const inferredId = connectionIdFromGrant(fragmentGrant || legacyGrant);
+  const connectionId = pathId || rememberedId || inferredId;
+  const grant = fragmentGrant || legacyGrant || (connectionId ? localStorage.getItem(`portalGrant:${connectionId}`) : '') || '';
 
-  if (pathId) localStorage.setItem('lastConnectionId', pathId);
-  if (grant && connectionId) localStorage.setItem(`portalGrant:${connectionId}`, grant);
+  if (connectionId) localStorage.setItem('lastConnectionId', connectionId);
+  if (grant && connectionId) {
+    localStorage.setItem(`portalGrant:${connectionId}`, grant);
+    sessionStorage.removeItem('portalGrant');
+  }
   if (location.hash) history.replaceState(null, '', `${location.pathname}${location.search}`);
 
-  return {
-    connectionId,
-    grant: grant || (connectionId ? localStorage.getItem(`portalGrant:${connectionId}`) : '') || ''
-  };
+  return { connectionId, grant };
 }
 
 const auth = consumeGrant();
@@ -313,6 +330,9 @@ function renderDashboard(data) {
 
 async function load() {
   try {
+    if (!auth.connectionId && location.pathname === '/') {
+      throw new Error('Open your personal Inspectology invite link once to connect this device.');
+    }
     const requestOptions = { cache: 'no-store', headers: {} };
     if (auth.grant) requestOptions.headers.Authorization = `Bearer ${auth.grant}`;
     const response = await fetch(`/api/agent/${encodeURIComponent(getConnectionId())}`, requestOptions);
