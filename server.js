@@ -402,9 +402,21 @@ function createPortal(options = {}) {
     const sample = applyCustomization(readSampleAgent(), config.branding, config.demoAgent, config.demoTier);
     if (config.mode === 'demo') return { ...sample, meta: { mode: 'demo' } };
     const scope = config.companyId;
+
+    async function getUpstream(stage, endpoint) {
+      try {
+        return await upstreamGet(endpoint);
+      } catch (error) {
+        error.safeDetail = error instanceof UpstreamHttpError
+          ? `${stage} returned HTTP ${error.upstreamStatus}`
+          : `${stage} failed: ${error.message}`;
+        throw error;
+      }
+    }
+
     let connections;
     try {
-      connections = await upstreamGet(`/v2/connections/${encodeURIComponent(connectionId)}`);
+      connections = await getUpstream('Connection lookup', `/v2/connections/${encodeURIComponent(connectionId)}`);
     } catch (error) {
       if (error instanceof UpstreamHttpError && error.upstreamStatus === 404) return null;
       throw error;
@@ -412,13 +424,13 @@ function createPortal(options = {}) {
     const connection = connections.data;
     assertRecordId(connection, connectionId, 'connection');
     assertCompanyScope([connection], scope);
-    const stats = await upstreamGet(query('/v2/connection_stats', {
+    const stats = await getUpstream('Connection stats lookup', query('/v2/connection_stats', {
       'filter[id]': connectionId, 'page[size]': '1'
     }));
     if (!Array.isArray(stats.data) || stats.data.length !== 1) throw authError('Upstream stats record missing or ambiguous', 403);
     assertRecordId(stats.data[0], connectionId, 'stats');
     assertCompanyScope(stats.data, scope);
-    const inspections = await upstreamGet(query('/v2/inspections', {
+    const inspections = await getUpstream('Inspection history lookup', query('/v2/inspections', {
       'filter[connection_id]': connectionId, include: 'buying_agent,selling_agent,company', sort: '-datetime', 'page[size]': '50'
     }));
     if (!Array.isArray(inspections.data)) throw authError('Upstream inspections data missing', 403);
@@ -496,8 +508,11 @@ function createPortal(options = {}) {
       sendJson(res, 405, { error: 'Method not allowed' }); status = 405;
     } catch (error) {
       status = Number(error.statusCode) || 502;
-      if (!res.headersSent) sendJson(res, status, { error: status === 502 ? 'Upstream service unavailable' : error.message });
-      else res.destroy?.();
+      if (!res.headersSent) {
+        const payload = { error: status === 502 ? 'Upstream service unavailable' : error.message };
+        if (status === 502 && error.safeDetail) payload.detail = error.safeDetail;
+        sendJson(res, status, payload);
+      } else res.destroy?.();
     } finally {
       const route = pathname === '/api/health'
         ? '/api/health'
