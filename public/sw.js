@@ -1,6 +1,6 @@
 'use strict';
 
-const CACHE_NAME = 'inspectology-agent-v5';
+const CACHE_NAME = 'inspectology-agent-v6';
 const STATIC_ASSETS = [
   '/',
   '/styles.css',
