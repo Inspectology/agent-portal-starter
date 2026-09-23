@@ -1,6 +1,6 @@
 'use strict';
 
-const CACHE_NAME = 'inspectology-agent-v1';
+const CACHE_NAME = 'inspectology-agent-v2';
 const STATIC_ASSETS = [
   '/',
   '/styles.css',
@@ -31,7 +31,25 @@ self.addEventListener('fetch', event => {
 
   if (request.mode === 'navigate') {
     event.respondWith(
-      fetch(request).catch(() => caches.match('/'))
+      fetch(request).then(response => {
+        const copy = response.clone();
+        caches.open(CACHE_NAME).then(cache => cache.put('/', copy));
+        return response;
+      }).catch(() => caches.match('/'))
+    );
+    return;
+  }
+
+  const freshFirst = ['/app.js', '/styles.css', '/mode-copy.js', '/manifest.webmanifest', '/sw.js'].includes(url.pathname);
+  if (freshFirst) {
+    event.respondWith(
+      fetch(request).then(response => {
+        if (response.ok) {
+          const copy = response.clone();
+          caches.open(CACHE_NAME).then(cache => cache.put(request, copy));
+        }
+        return response;
+      }).catch(() => caches.match(request))
     );
     return;
   }
