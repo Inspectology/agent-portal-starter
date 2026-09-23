@@ -271,8 +271,10 @@ function assertInspectionScope(records, companyId, connectionId) {
 
 function mapInspection(insp) {
   const attrs = insp.attributes || {};
+  const parsedDate = attrs.datetime ? new Date(attrs.datetime) : null;
+  const date = parsedDate && !Number.isNaN(parsedDate.getTime()) ? parsedDate.toISOString().slice(0, 10) : '';
   return {
-    date: attrs.datetime ? new Date(attrs.datetime).toISOString().slice(0, 10) : '',
+    date,
     location: [attrs.property_city, attrs.property_state].filter(Boolean).join(', ') || 'Location withheld',
     services: [attrs.service_names, attrs.service_add_on_names].filter(Boolean).join(' + '),
     inspector: attrs.inspector_name || '',
