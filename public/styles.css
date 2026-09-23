@@ -88,12 +88,12 @@ input:focus-visible,
   position: sticky;
   top: 0;
   z-index: 20;
-  min-height: 78px;
+  min-height: 72px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-  padding: 12px 18px;
+  padding: 10px 18px;
   background: rgba(255, 255, 255, 0.96);
   border-bottom: 1px solid var(--line);
   border-top: 4px solid var(--brand);
@@ -108,8 +108,8 @@ input:focus-visible,
 
 .brand-logo {
   display: block;
-  width: 154px;
-  max-height: 54px;
+  width: 190px;
+  max-height: 62px;
   object-fit: contain;
   object-position: left center;
 }
@@ -164,6 +164,13 @@ input:focus-visible,
   margin: 0;
   color: var(--muted);
   font-size: 14px;
+}
+
+.agent-location {
+  min-height: 18px;
+  margin: 4px 0 0;
+  color: #777;
+  font-size: 12px;
 }
 
 .tier {
@@ -706,7 +713,7 @@ input:focus-visible,
   }
 
   .brand-logo {
-    width: 132px;
+    width: 168px;
   }
 
   .badge {
