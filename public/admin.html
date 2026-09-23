@@ -47,6 +47,32 @@
 
         <p id="searchMessage" class="admin-message" aria-live="polite"></p>
         <div id="results" class="admin-results"></div>
+
+        <div class="admin-divider"></div>
+
+        <section class="report-test-panel" aria-labelledby="reportTestHeading">
+          <div>
+            <h2 id="reportTestHeading">Report PDF Test</h2>
+            <p>Check whether a published Spectora inspection exposes a PDF attachment we can use for Inspectology AI.</p>
+          </div>
+          <form id="reportTestForm" class="report-test-form">
+            <label class="form-field">
+              <span>Spectora connection ID</span>
+              <input id="reportConnectionId" value="212832" inputmode="numeric" required>
+            </label>
+            <label class="form-field">
+              <span>Property address</span>
+              <input id="reportAddress" value="948 Glenangus Dr, Bel Air, MD 21015" required>
+            </label>
+            <label class="form-field">
+              <span>Inspection date</span>
+              <input id="reportDate" type="date" value="2026-09-22">
+            </label>
+            <button class="primary-button" type="submit">Check Report PDF</button>
+          </form>
+          <p id="reportTestMessage" class="admin-message" aria-live="polite"></p>
+          <div id="reportTestResults" class="report-test-results"></div>
+        </section>
       </section>
     </main>
     <script src="/admin.js" defer></script>
