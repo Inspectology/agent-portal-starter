@@ -108,7 +108,7 @@ function renderAgent(agent) {
             document.createTextNode(' '),
             el('a', {
               class: 'link-button',
-              href: `mailto:${encodeURIComponent(agent.email)}?subject=${encodeURIComponent('Your Inspectology Agent App')}&body=${encodeURIComponent(`Here is your secure Inspectology Agent App link:\n\n${body.inviteUrl}\n\nThis link is valid for 30 days.`)}`,
+              href: `mailto:${encodeURIComponent(agent.email)}?subject=${encodeURIComponent('Your Inspectology Agent Dashboard')}&body=${encodeURIComponent(`Here is your secure Inspectology Agent Dashboard link:\n\n${body.inviteUrl}\n\nThis link is valid for 30 days.`)}`,
               text: 'Email invite'
             })
           );
