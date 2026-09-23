@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f5b819">
+    <title>Inspectology Agent Admin</title>
+    <link rel="icon" href="/assets/inspectology-app.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="admin-shell">
+      <header class="admin-header">
+        <div>
+          <div class="brand">Inspectology</div>
+          <p class="company-tagline">Agent App Administration</p>
+        </div>
+        <a class="admin-home-link" href="/">Agent App</a>
+      </header>
+
+      <section class="admin-card" id="loginCard">
+        <h1>Admin Access</h1>
+        <p>Enter the private admin access key stored in Vercel.</p>
+        <form id="loginForm" class="admin-form">
+          <label class="form-field">
+            <span>Admin access key</span>
+            <input id="adminKey" type="password" autocomplete="current-password" required>
+          </label>
+          <button class="primary-button" type="submit">Continue</button>
+          <p id="loginMessage" class="admin-message" aria-live="polite"></p>
+        </form>
+      </section>
+
+      <section class="admin-card" id="searchCard" hidden>
+        <div class="admin-card-heading">
+          <div>
+            <h1>Agent Invites</h1>
+            <p>Search Spectora, then generate a secure 30-day Agent App invite.</p>
+          </div>
+          <button id="signOut" class="secondary-button" type="button">Sign Out</button>
+        </div>
+
+        <form id="searchForm" class="admin-search">
+          <input id="agentSearch" type="search" placeholder="Search agent name or email" autocomplete="off" required minlength="2">
+          <button class="primary-button" type="submit">Search</button>
+        </form>
+
+        <p id="searchMessage" class="admin-message" aria-live="polite"></p>
+        <div id="results" class="admin-results"></div>
+      </section>
+    </main>
+    <script src="/admin.js" defer></script>
+  </body>
+</html>
