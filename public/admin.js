@@ -18,6 +18,10 @@ const reportLinkTestForm = document.getElementById('reportLinkTestForm');
 const reportLinkUrl = document.getElementById('reportLinkUrl');
 const reportLinkTestMessage = document.getElementById('reportLinkTestMessage');
 const reportLinkTestResults = document.getElementById('reportLinkTestResults');
+const networkTestForm = document.getElementById('networkTestForm');
+const networkTestUrl = document.getElementById('networkTestUrl');
+const networkTestMessage = document.getElementById('networkTestMessage');
+const networkTestResults = document.getElementById('networkTestResults');
 
 let adminKey = sessionStorage.getItem('inspectologyAdminKey') || '';
 
@@ -177,6 +181,55 @@ reportLinkTestForm.addEventListener('submit', async event => {
     );
   } catch (error) {
     reportLinkTestMessage.textContent = error.message;
+  }
+});
+
+networkTestForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  networkTestResults.replaceChildren();
+  networkTestMessage.textContent = 'Scanning Spectora Report Viewer scripts...';
+
+  try {
+    const body = await api('/api/admin/report-network-test', {
+      method: 'POST',
+      body: JSON.stringify({ url: networkTestUrl.value.trim() })
+    });
+
+    const candidates = body.endpointCandidates || [];
+    const scripts = body.scannedScripts || [];
+
+    networkTestMessage.textContent = candidates.length
+      ? `Found ${candidates.length} possible report-data endpoint${candidates.length === 1 ? '' : 's'}.`
+      : `Scanned ${scripts.length} script file${scripts.length === 1 ? '' : 's'}, but no clear endpoint strings were found.`;
+
+    const scriptSummary = el('div', { class: 'report-test-summary' }, [
+      el('strong', { text: 'Spectora Report Viewer scan' }),
+      el('span', { text: `Report HTTP ${body.reportStatus || ''}` }),
+      el('span', { text: `Scripts found: ${(body.scriptSources || []).length} | Scripts scanned: ${scripts.filter(item => item.scanned).length}` })
+    ]);
+    networkTestResults.append(scriptSummary);
+
+    for (const candidate of candidates) {
+      networkTestResults.append(
+        el('div', { class: 'endpoint-candidate' }, [
+          el('code', { text: candidate })
+        ])
+      );
+    }
+
+    if (!candidates.length && scripts.length) {
+      for (const script of scripts) {
+        networkTestResults.append(
+          el('div', { class: 'report-file-card' }, [
+            el('strong', { text: script.scanned ? 'Scanned script' : 'Skipped script' }),
+            el('span', { text: script.url || '' }),
+            el('span', { text: script.scanned ? `${script.bytes || 0} bytes | ${script.candidateCount || 0} candidates` : (script.reason || '') })
+          ])
+        );
+      }
+    }
+  } catch (error) {
+    networkTestMessage.textContent = error.message;
   }
 });
 
