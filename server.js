@@ -94,7 +94,7 @@ function createConfig(env = process.env) {
   return {
     mode,
     port,
-    apiKey: env.SPECTORA_API_KEY || '',
+    apiKey: String(env.SPECTORA_API_KEY || '').trim().replace(/^Bearer\s+/i, ''),
     companyId: mode === 'live' ? validatedPositiveDecimalId(env.SPECTORA_COMPANY_ID, 'SPECTORA_COMPANY_ID') : '',
     signingSecret: env.PORTAL_SIGNING_SECRET || '',
     upstreamTimeoutMs: boundedInteger(env.UPSTREAM_TIMEOUT_MS, DEFAULT_TIMEOUT_MS, 100, 30_000),
