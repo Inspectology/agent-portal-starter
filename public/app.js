@@ -203,7 +203,7 @@ function renderDashboard(data) {
       el('div', { class: 'brand-lockup' }, [
         el('img', {
           class: 'brand-logo',
-          src: 'https://static.wixstatic.com/media/4b52f0_0a206cfa3f764d989adbe9a349b1d320~mv2.png/v1/fill/w_500%2Ch_500%2Cal_c%2Cq_85%2Cenc_avif%2Cquality_auto/inspectology%20color%20logo%20with%20white%20glow.png',
+          src: 'https://static.wixstatic.com/media/4b52f0_0a206cfa3f764d989adbe9a349b1d320~mv2.png',
           alt: 'Inspectology'
         })
       ]),
@@ -222,6 +222,7 @@ function renderDashboard(data) {
       avatar,
       el('h1', { class: 'agent-name', text: `${agent.firstName} ${agent.lastName}` }),
       el('p', { class: 'agency', text: agent.agency || 'Real estate partner' }),
+      el('p', { class: 'agent-location', text: [agent.city, agent.state].filter(Boolean).join(', ') }),
       el('div', { class: 'tier' }, [
         el('span', { class: 'tier-dot', 'aria-hidden': 'true' }),
         document.createTextNode(tier.label || 'Partner')
