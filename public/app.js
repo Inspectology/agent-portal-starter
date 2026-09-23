@@ -186,7 +186,14 @@ async function load() {
     const requestOptions = { cache: 'no-store', headers: {} };
     if (portalGrant) requestOptions.headers.Authorization = `Bearer ${portalGrant}`;
     const response = await fetch(`/api/agent/${encodeURIComponent(getUuid())}`, requestOptions);
-    if (!response.ok) throw new Error(`Request failed: ${response.status}`);
+    if (!response.ok) {
+      let detail = '';
+      try {
+        const body = await response.json();
+        detail = body.detail || body.error || '';
+      } catch {}
+      throw new Error(detail ? `Request failed: ${response.status} - ${detail}` : `Request failed: ${response.status}`);
+    }
     renderDashboard(await response.json());
   } catch (error) {
     app.replaceChildren(
