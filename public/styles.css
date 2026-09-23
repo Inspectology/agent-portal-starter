@@ -839,3 +839,19 @@ input:focus-visible,
   }
 }
 
+.endpoint-candidate {
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--brand);
+  border-radius: 10px;
+  background: #fafafa;
+  overflow-wrap: anywhere;
+}
+
+.endpoint-candidate code {
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
