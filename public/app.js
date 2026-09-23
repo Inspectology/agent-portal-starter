@@ -165,7 +165,7 @@ function renderProfileSection(agent) {
     ]),
     el('p', {
       class: 'profile-note',
-      text: 'Profile changes are saved in this Agent App. Spectora currently blocks agent email updates through its API.'
+      text: 'Profile changes are saved in this Agent Dashboard. Spectora currently blocks agent email updates through its API.'
     }),
     el('button', { class: 'primary-button', type: 'submit', text: 'Save Profile' }),
     saveMessage
@@ -312,7 +312,7 @@ function renderDashboard(data) {
 
   app.append(
     el('section', { class: 'section app-install-card' }, [
-      el('h2', { text: 'Agent App' }),
+      el('h2', { text: 'Agent Dashboard' }),
       el('p', { class: 'install-copy', text: 'Add the Inspectology Agent Dashboard to your phone for one-tap access.' }),
       el('button', { class: 'secondary-button', type: 'button', text: 'Install Dashboard', onclick: installApp })
     ])
