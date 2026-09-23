@@ -225,13 +225,13 @@ function bearerToken(req) {
 function assertCompanyScope(records, companyId) {
   for (const record of records) {
     const attributeId = record?.attributes?.company_id;
-    if (attributeId !== companyId) {
+    if (String(attributeId ?? '') !== String(companyId)) {
       throw authError('Upstream company scope mismatch', 403);
     }
     if (record.relationships && Object.hasOwn(record.relationships, 'company')) {
       const relationship = record.relationships.company;
       const resource = relationship?.data;
-      if (!resource || Array.isArray(resource) || typeof resource !== 'object' || resource.type !== 'company' || resource.id !== companyId) {
+      if (!resource || Array.isArray(resource) || typeof resource !== 'object' || resource.type !== 'company' || String(resource.id ?? '') !== String(companyId)) {
         throw authError('Upstream company relationship mismatch', 403);
       }
     }
@@ -257,10 +257,10 @@ function relationshipId(record, name, expectedType, allowNull = false) {
 
 function assertInspectionScope(records, companyId, connectionId) {
   for (const record of records) {
-    if (Object.hasOwn(record?.attributes || {}, 'company_id') && record.attributes.company_id !== companyId) {
+    if (Object.hasOwn(record?.attributes || {}, 'company_id') && String(record.attributes.company_id ?? '') !== String(companyId)) {
       throw authError('Upstream inspection company attribute mismatch', 403);
     }
-    if (relationshipId(record, 'company', 'company') !== companyId) throw authError('Upstream inspection company scope mismatch', 403);
+    if (String(relationshipId(record, 'company', 'company') ?? '') !== String(companyId)) throw authError('Upstream inspection company scope mismatch', 403);
     const buyingAgentId = relationshipId(record, 'buying_agent', 'connection', true);
     const sellingAgentId = relationshipId(record, 'selling_agent', 'connection', true);
     if (buyingAgentId !== connectionId && sellingAgentId !== connectionId) {
