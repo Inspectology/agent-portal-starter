@@ -14,6 +14,10 @@ const reportAddress = document.getElementById('reportAddress');
 const reportDate = document.getElementById('reportDate');
 const reportTestMessage = document.getElementById('reportTestMessage');
 const reportTestResults = document.getElementById('reportTestResults');
+const reportLinkTestForm = document.getElementById('reportLinkTestForm');
+const reportLinkUrl = document.getElementById('reportLinkUrl');
+const reportLinkTestMessage = document.getElementById('reportLinkTestMessage');
+const reportLinkTestResults = document.getElementById('reportLinkTestResults');
 
 let adminKey = sessionStorage.getItem('inspectologyAdminKey') || '';
 
@@ -141,6 +145,40 @@ function renderAgent(agent) {
     status
   ]);
 }
+
+reportLinkTestForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  reportLinkTestResults.replaceChildren();
+  reportLinkTestMessage.textContent = 'Testing published Spectora report...';
+
+  try {
+    const body = await api('/api/admin/report-link-test', {
+      method: 'POST',
+      body: JSON.stringify({ url: reportLinkUrl.value.trim() })
+    });
+
+    const readable = body.statusCode >= 200 && body.statusCode < 300;
+    const useful = body.textCharacters > 500 && (body.containsAddress || body.containsInspectionTerms);
+
+    reportLinkTestMessage.textContent = readable
+      ? (useful
+          ? 'Success. The server can read useful report text from this published Spectora report.'
+          : 'The page is reachable, but the HTML does not contain enough useful report text yet.')
+      : `Spectora returned HTTP ${body.statusCode}.`;
+
+    reportLinkTestResults.append(
+      el('div', { class: 'report-test-summary' }, [
+        el('strong', { text: body.title || 'Published Spectora report' }),
+        el('span', { text: `HTTP ${body.statusCode} | ${body.contentType || 'Unknown content type'}` }),
+        el('span', { text: `HTML bytes: ${body.htmlBytes} | Readable text: ${body.textCharacters} characters` }),
+        el('span', { text: `Address found: ${body.containsAddress ? 'Yes' : 'No'} | Inspection language found: ${body.containsInspectionTerms ? 'Yes' : 'No'}` }),
+        el('p', { class: 'report-text-preview', text: body.textPreview || 'No readable text returned.' })
+      ])
+    );
+  } catch (error) {
+    reportLinkTestMessage.textContent = error.message;
+  }
+});
 
 reportTestForm.addEventListener('submit', async event => {
   event.preventDefault();
