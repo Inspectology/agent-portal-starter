@@ -50,6 +50,24 @@
 
         <div class="admin-divider"></div>
 
+        <section class="report-test-panel" aria-labelledby="reportLinkTestHeading">
+          <div>
+            <h2 id="reportLinkTestHeading">Published Report Link Test</h2>
+            <p>Test whether the Inspectology server can read a published Spectora web report without a logged-in browser session.</p>
+          </div>
+          <form id="reportLinkTestForm" class="report-link-form">
+            <label class="form-field">
+              <span>Spectora published report URL</span>
+              <input id="reportLinkUrl" type="url" value="https://reports.spectora.com/v/reports/f1434136-3ff4-49b2-ba8d-f3aa128fb8cc?ignoreClientComplete=true" required>
+            </label>
+            <button class="primary-button" type="submit">Test Published Report</button>
+          </form>
+          <p id="reportLinkTestMessage" class="admin-message" aria-live="polite"></p>
+          <div id="reportLinkTestResults" class="report-test-results"></div>
+        </section>
+
+        <div class="admin-divider"></div>
+
         <section class="report-test-panel" aria-labelledby="reportTestHeading">
           <div>
             <h2 id="reportTestHeading">Report PDF Test</h2>
