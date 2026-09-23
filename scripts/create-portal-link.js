@@ -11,8 +11,8 @@ function valueAfter(flag) {
 try {
   const connectionId = valueAfter('--connection-id');
   const originText = valueAfter('--origin');
-  const ttlSeconds = Number(valueAfter('--ttl') || 3600);
-  if (!connectionId || !originText) throw new Error('Usage: create-portal-link --connection-id ID --origin https://portal.example [--ttl 3600]');
+  const ttlSeconds = Number(valueAfter('--ttl') || 2592000);
+  if (!connectionId || !originText) throw new Error('Usage: create-portal-link --connection-id ID --origin https://portal.example [--ttl 2592000]');
   if (!/^[1-9][0-9]*$/.test(connectionId)) throw new Error('Spectora connection ID must be a positive decimal identifier');
   const origin = new URL(originText);
   if (origin.protocol !== 'https:' || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) {
