@@ -103,21 +103,21 @@ function mergedAgent(agent) {
   return { ...agent, ...getProfileOverrides() };
 }
 
-function applyBrand(company) {
+function applyBrand() {
   const colors = {
-    '--gold': company.brand.primary,
-    '--gold-dark': company.brand.accentText,
-    '--ink': company.brand.ink,
-    '--muted': company.brand.muted,
-    '--surface': company.brand.surface,
-    '--paper': company.brand.background,
-    '--line': company.brand.border,
-    '--green': company.brand.success,
-    '--blue': company.brand.focus
+    '--brand': '#a90533',
+    '--brand-dark': '#7f0026',
+    '--ink': '#171717',
+    '--muted': '#626262',
+    '--surface': '#ffffff',
+    '--paper': '#f4f4f5',
+    '--line': '#d9d9dc',
+    '--success': '#2f7d4a',
+    '--focus': '#a90533'
   };
   for (const [property, value] of Object.entries(colors)) document.documentElement.style.setProperty(property, value);
   const theme = document.querySelector('meta[name="theme-color"]');
-  if (theme) theme.setAttribute('content', company.brand.primary);
+  if (theme) theme.setAttribute('content', '#a90533');
 }
 
 function field(label, name, value, options = {}) {
@@ -193,18 +193,21 @@ function renderDashboard(data) {
   currentData = data;
   const { company, stats, tier, inspections } = data;
   const agent = mergedAgent(data.agent);
-  applyBrand(company);
-  document.title = `${agent.firstName} ${agent.lastName} | ${company.appName}`;
+  applyBrand();
+  document.title = `${agent.firstName} ${agent.lastName} | Inspectology Agent Dashboard`;
   app.replaceChildren();
 
   app.append(
     el('div', { id: 'top' }),
     el('header', { class: 'topbar' }, [
       el('div', { class: 'brand-lockup' }, [
-        el('div', { class: 'brand', text: company.name }),
-        el('p', { class: 'company-tagline', text: company.tagline })
+        el('img', {
+          class: 'brand-logo',
+          src: 'https://static.wixstatic.com/media/4b52f0_0a206cfa3f764d989adbe9a349b1d320~mv2.png/v1/fill/w_500%2Ch_500%2Cal_c%2Cq_85%2Cenc_avif%2Cquality_auto/inspectology%20color%20logo%20with%20white%20glow.png',
+          alt: 'Inspectology'
+        })
       ]),
-      el('div', { class: 'badge', text: company.appName })
+      el('div', { class: 'badge', text: 'Agent Dashboard' })
     ])
   );
 
@@ -310,8 +313,8 @@ function renderDashboard(data) {
   app.append(
     el('section', { class: 'section app-install-card' }, [
       el('h2', { text: 'Agent App' }),
-      el('p', { class: 'install-copy', text: 'Add Inspectology to your phone home screen for quick access to your dashboard.' }),
-      el('button', { class: 'secondary-button', type: 'button', text: 'Install Agent App', onclick: installApp })
+      el('p', { class: 'install-copy', text: 'Add the Inspectology Agent Dashboard to your phone for one-tap access.' }),
+      el('button', { class: 'secondary-button', type: 'button', text: 'Install Dashboard', onclick: installApp })
     ])
   );
 
