@@ -578,27 +578,82 @@ function extractScriptSources(html, baseUrl) {
 function scanBundleEndpointCandidates(source) {
   const text = String(source || '');
   const candidates = new Set();
+  const interestingStrings = new Set();
+  const contexts = [];
+  const contextSeen = new Set();
 
   const absolute = /https:\/\/[^"'\s)]+/gi;
   for (const match of text.matchAll(absolute)) {
     const value = match[0].replace(/[\\,;]+$/, '');
-    if (/(spectora|api|graphql|report|inspection|viewer)/i.test(value)) candidates.add(value.slice(0, 240));
-    if (candidates.size >= 80) break;
+    if (/(spectora|api|graphql|report|inspection|viewer|changeset)/i.test(value)) candidates.add(value.slice(0, 260));
+    if (candidates.size >= 120) break;
   }
 
-  const quotedPath = /["'`]([^"'\`]{1,220})["'`]/g;
-  for (const match of text.matchAll(quotedPath)) {
+  const quoted = /["'`]([^"'\`]{1,260})["'`]/g;
+  for (const match of text.matchAll(quoted)) {
     const value = match[1];
     if (
-      value.startsWith('/') &&
-      /(api|graphql|report|inspection|viewer|section|comment|finding|summary)/i.test(value)
+      /(spectora|changeset|report|inspection|section|comment|finding|defect|summary|graphql|apiHost)/i.test(value)
     ) {
-      candidates.add(value);
+      if (
+        value.startsWith('/') ||
+        value.startsWith('http') ||
+        /^[A-Za-z0-9_.:-]{2,120}$/.test(value)
+      ) {
+        interestingStrings.add(value.slice(0, 260));
+      }
     }
-    if (candidates.size >= 80) break;
+    if (interestingStrings.size >= 160) break;
   }
 
-  return [...candidates].slice(0, 80);
+  const needles = [
+    'changeset-api.hermes.prod.spectora.com',
+    'apiHost',
+    'graphql',
+    'changeset',
+    'report',
+    'inspection',
+    'summary',
+    'finding',
+    'defect'
+  ];
+
+  for (const needle of needles) {
+    let from = 0;
+    let hits = 0;
+    while (hits < 4) {
+      const index = text.toLowerCase().indexOf(needle.toLowerCase(), from);
+      if (index === -1) break;
+      const start = Math.max(0, index - 420);
+      const end = Math.min(text.length, index + needle.length + 700);
+      const snippet = text.slice(start, end).replace(/\s+/g, ' ').slice(0, 1200);
+      const key = snippet.slice(0, 180);
+      if (!contextSeen.has(key)) {
+        contextSeen.add(key);
+        contexts.push({ needle, snippet });
+      }
+      from = index + needle.length;
+      hits += 1;
+    }
+  }
+
+  const sortedCandidates = [...candidates].sort((a, b) => {
+    const score = value => {
+      let total = 0;
+      if (/spectora/i.test(value)) total += 6;
+      if (/changeset/i.test(value)) total += 5;
+      if (/report|inspection/i.test(value)) total += 4;
+      if (/graphql|api/i.test(value)) total += 2;
+      return total;
+    };
+    return score(b) - score(a);
+  });
+
+  return {
+    candidates: sortedCandidates.slice(0, 100),
+    interestingStrings: [...interestingStrings].slice(0, 140),
+    contexts: contexts.slice(0, 28)
+  };
 }
 
 function createRateLimiter(config, nowMs) {
@@ -907,6 +962,8 @@ function createPortal(options = {}) {
           const scriptSources = extractScriptSources(page.body, page.finalUrl);
           const scannedScripts = [];
           const endpointCandidates = new Set();
+          const interestingStrings = new Set();
+          const bundleContexts = [];
 
           for (const scriptUrl of scriptSources.slice(0, 6)) {
             let parsed;
@@ -924,15 +981,19 @@ function createPortal(options = {}) {
 
             try {
               const asset = await fetchSpectoraPublicAsset(scriptUrl);
-              const candidates = scanBundleEndpointCandidates(asset.body);
-              for (const candidate of candidates) endpointCandidates.add(candidate);
+              const scan = scanBundleEndpointCandidates(asset.body);
+              for (const candidate of scan.candidates) endpointCandidates.add(candidate);
+              for (const value of scan.interestingStrings) interestingStrings.add(value);
+              for (const item of scan.contexts) bundleContexts.push(item);
               scannedScripts.push({
                 url: scriptUrl,
                 scanned: true,
                 statusCode: asset.statusCode,
                 contentType: asset.contentType,
                 bytes: Buffer.byteLength(asset.body, 'utf8'),
-                candidateCount: candidates.length
+                candidateCount: scan.candidates.length,
+                interestingStringCount: scan.interestingStrings.length,
+                contextCount: scan.contexts.length
               });
             } catch (error) {
               scannedScripts.push({
@@ -947,7 +1008,9 @@ function createPortal(options = {}) {
             reportStatus: page.statusCode,
             scriptSources,
             scannedScripts,
-            endpointCandidates: [...endpointCandidates].slice(0, 80)
+            endpointCandidates: [...endpointCandidates].slice(0, 100),
+            interestingStrings: [...interestingStrings].slice(0, 140),
+            bundleContexts: bundleContexts.slice(0, 28)
           });
           status = 200;
           return;
