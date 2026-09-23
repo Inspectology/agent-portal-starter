@@ -816,3 +816,26 @@ input:focus-visible,
   }
 }
 
+.report-link-form {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.report-text-preview {
+  margin: 8px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 760px) {
+  .report-link-form {
+    grid-template-columns: 1fr;
+  }
+}
+
