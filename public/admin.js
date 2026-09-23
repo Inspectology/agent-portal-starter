@@ -83,7 +83,7 @@ function renderAgent(agent) {
           method: 'POST',
           body: JSON.stringify({ connectionId: agent.connectionId })
         });
-        status.replaceChildren(
+        const inviteActions = [
           el('span', { text: 'Invite ready. ' }),
           el('button', {
             class: 'link-button',
@@ -102,7 +102,18 @@ function renderAgent(agent) {
             rel: 'noopener',
             text: 'Open dashboard'
           })
-        );
+        ];
+        if (agent.email) {
+          inviteActions.push(
+            document.createTextNode(' '),
+            el('a', {
+              class: 'link-button',
+              href: `mailto:${encodeURIComponent(agent.email)}?subject=${encodeURIComponent('Your Inspectology Agent App')}&body=${encodeURIComponent(`Here is your secure Inspectology Agent App link:\n\n${body.inviteUrl}\n\nThis link is valid for 30 days.`)}`,
+              text: 'Email invite'
+            })
+          );
+        }
+        status.replaceChildren(...inviteActions);
       } catch (error) {
         status.textContent = error.message;
       } finally {
@@ -111,16 +122,7 @@ function renderAgent(agent) {
     }
   });
 
-  const emailButton = agent.email
-    ? el('a', {
-        class: 'secondary-button admin-email-button',
-        href: `mailto:${encodeURIComponent(agent.email)}?subject=${encodeURIComponent('Your Inspectology Agent App')}`,
-        text: 'Email'
-      })
-    : null;
-
   const actions = [inviteButton];
-  if (emailButton) actions.push(emailButton);
 
   return el('article', { class: 'admin-agent-card' }, [
     el('div', { class: 'admin-agent-main' }, [
