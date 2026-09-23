@@ -1,7 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="112" fill="#f5b819"/>
-  <path d="M116 232 256 118l140 114v160a28 28 0 0 1-28 28H144a28 28 0 0 1-28-28V232Z" fill="#232323"/>
-  <path d="M205 220h102v200H205z" fill="#fafaf7"/>
-  <circle cx="256" cy="280" r="28" fill="#f5b819"/>
-  <path d="M184 154h144" stroke="#232323" stroke-width="28" stroke-linecap="round"/>
+  <rect width="512" height="512" rx="112" fill="#ffffff"/>
+  <rect x="10" y="10" width="492" height="492" rx="102" fill="none" stroke="#e2e2e4" stroke-width="20"/>
+  <path d="M148 217 256 132l108 85v90" fill="none" stroke="#a90533" stroke-width="28" stroke-linecap="square" stroke-linejoin="miter"/>
+  <path d="M148 217v90" fill="none" stroke="#a90533" stroke-width="28"/>
+  <rect x="232" y="228" width="42" height="42" fill="#a90533"/>
+  <rect x="278" y="228" width="42" height="42" fill="#a90533"/>
+  <rect x="232" y="274" width="42" height="42" fill="#a90533"/>
+  <rect x="278" y="274" width="42" height="42" fill="#a90533"/>
+  <path d="M140 338c35 0 72 14 96 42v52c-29-30-61-43-96-45-23-2-37-13-37-30 0-11 7-19 18-19h19Z" fill="#4d4d4d"/>
+  <path d="M372 338c-35 0-72 14-96 42v52c29-30 61-43 96-45 23-2 37-13 37-30 0-11-7-19-18-19h-19Z" fill="#4d4d4d"/>
 </svg>
