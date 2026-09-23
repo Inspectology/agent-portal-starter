@@ -611,6 +611,89 @@ function createPortal(options = {}) {
           }).filter(agent => /^[1-9][0-9]*$/.test(agent.connectionId));
           sendJson(res, 200, { agents }); status = 200; return;
         }
+        if (req.method === 'GET' && pathname === '/api/admin/report-test') {
+          const connectionId = validatedPositiveDecimalId(url.searchParams.get('connectionId'), 'Spectora connection ID');
+          const address = String(url.searchParams.get('address') || '').trim();
+          const date = String(url.searchParams.get('date') || '').trim();
+
+          if (!address || address.length > 200) {
+            sendJson(res, 400, { error: 'A property address is required' }); status = 400; return;
+          }
+          if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+            sendJson(res, 400, { error: 'Date must use YYYY-MM-DD format' }); status = 400; return;
+          }
+
+          const streetAddress = address.split(',')[0].trim();
+          const inspections = await fetchUpstream('Inspection lookup', query('/v2/inspections', {
+            'filter[connection_id]': connectionId,
+            'filter[address]': streetAddress,
+            include: 'company,buying_agent,selling_agent,inspection_attachments',
+            sort: '-datetime',
+            'page[size]': '50'
+          }));
+
+          if (!Array.isArray(inspections.data)) throw authError('Upstream inspection lookup data missing', 502);
+          assertInspectionScope(inspections.data, config.companyId, connectionId);
+
+          const candidates = inspections.data.map(record => {
+            const attrs = record.attributes || {};
+            return {
+              id: String(record.id || ''),
+              datetime: attrs.datetime || '',
+              fullAddress: attrs.full_address || [
+                attrs.property_address,
+                attrs.property_address_2,
+                [attrs.property_city, attrs.property_state, attrs.property_zip].filter(Boolean).join(' ')
+              ].filter(Boolean).join(', '),
+              publishedAt: attrs.published_at || null,
+              slug: attrs.slug || ''
+            };
+          });
+
+          const selected = candidates.find(item => !date || String(item.datetime).slice(0, 10) === date) || null;
+          if (!selected) {
+            sendJson(res, 404, {
+              error: 'Matching inspection not found',
+              candidates
+            });
+            status = 404;
+            return;
+          }
+
+          const attachmentResponse = await fetchUpstream('Inspection attachment lookup', query('/v2/inspection_attachments', {
+            'filter[inspection_id]': selected.id,
+            sort: '-created_at',
+            'page[size]': '200'
+          }));
+
+          if (!Array.isArray(attachmentResponse.data)) throw authError('Upstream attachment data missing', 502);
+
+          const attachments = attachmentResponse.data.map(record => {
+            const attrs = record.attributes || {};
+            return {
+              id: String(record.id || ''),
+              name: attrs.name || '',
+              fileName: attrs.file_file_name || '',
+              description: attrs.description || '',
+              report: Boolean(attrs.report),
+              internalOnly: Boolean(attrs.internal_only),
+              fileUrl: attrs.file_url || '',
+              attachmentType: attrs.attachment_type || '',
+              createdAt: attrs.created_at || ''
+            };
+          });
+
+          sendJson(res, 200, {
+            inspection: selected,
+            attachments,
+            pdfAttachments: attachments.filter(item =>
+              /\.pdf(?:$|\?)/i.test(item.fileName) ||
+              /\.pdf(?:$|\?)/i.test(item.fileUrl)
+            )
+          });
+          status = 200;
+          return;
+        }
         if (req.method === 'POST' && pathname === '/api/admin/invite') {
           const body = await readJsonBody(req);
           const connectionId = validatedPositiveDecimalId(body.connectionId, 'Spectora connection ID');
