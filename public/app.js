@@ -14,14 +14,23 @@ function text(value) {
   return value == null ? '' : String(value);
 }
 
+function parseDate(value) {
+  if (!value) return null;
+  const text = String(value).trim();
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(text);
+  const date = new Date(dateOnly ? `${text}T00:00:00` : text);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 function fmtDate(value) {
-  if (!value) return '';
-  const date = new Date(`${value}T00:00:00`);
+  const date = parseDate(value);
+  if (!date) return '';
   return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(date);
 }
 
 function monthDay(value) {
-  const date = new Date(`${value}T00:00:00`);
+  const date = parseDate(value);
+  if (!date) return { month: '', day: '' };
   return {
     month: new Intl.DateTimeFormat('en-US', { month: 'short' }).format(date),
     day: new Intl.DateTimeFormat('en-US', { day: '2-digit' }).format(date)
