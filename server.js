@@ -19,6 +19,7 @@ const MIME_TYPES = {
   '.css': 'text/css; charset=utf-8',
   '.js': 'application/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
   '.svg': 'image/svg+xml; charset=utf-8',
   '.png': 'image/png'
 };
@@ -165,8 +166,8 @@ function createGrant(connectionId, secret, options = {}) {
   const validatedConnectionId = validatedPositiveDecimalId(connectionId, 'Spectora connection ID');
   if (Buffer.byteLength(secret || '', 'utf8') < 32) throw new Error('A signing secret of at least 32 bytes is required');
   const now = options.now ?? Math.floor(Date.now() / 1000);
-  const ttlSeconds = options.ttlSeconds ?? 3600;
-  if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > 86400) throw new Error('Grant TTL must be between 1 and 86400 seconds');
+  const ttlSeconds = options.ttlSeconds ?? 2_592_000;
+  if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > 7_776_000) throw new Error('Grant TTL must be between 1 and 7776000 seconds');
   const payload = Buffer.from(JSON.stringify({ v: 1, connectionId: validatedConnectionId, exp: now + ttlSeconds })).toString('base64url');
   return `${payload}.${signGrantPayload(payload, secret)}`;
 }
@@ -445,6 +446,8 @@ function createPortal(options = {}) {
       agent: {
         firstName: attrs.first_name || '',
         lastName: attrs.last_name || '',
+        email: attrs.email || '',
+        phone: attrs.phone || attrs.phone_number || '',
         agency: attrs.agency_name || '',
         city: attrs.city || '',
         state: attrs.state || '',
