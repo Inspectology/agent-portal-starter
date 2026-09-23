@@ -509,3 +509,156 @@ button:focus-visible,
   }
 }
 
+.admin-shell {
+  width: min(920px, calc(100% - 32px));
+  margin: 32px auto;
+}
+
+.admin-header,
+.admin-card-heading,
+.admin-agent-card,
+.admin-agent-actions {
+  display: flex;
+  align-items: center;
+}
+
+.admin-header,
+.admin-card-heading {
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.admin-header {
+  margin-bottom: 20px;
+}
+
+.admin-home-link,
+.link-button {
+  color: var(--ink);
+  font-weight: 800;
+}
+
+.admin-card {
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: 0 10px 28px rgba(35, 35, 35, 0.08);
+}
+
+.admin-card[hidden] {
+  display: none;
+}
+
+.admin-card h1 {
+  margin: 0 0 8px;
+}
+
+.admin-card p {
+  color: var(--muted);
+}
+
+.admin-form {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.admin-search {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  margin: 20px 0 10px;
+}
+
+.admin-search input {
+  min-height: 46px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font: inherit;
+}
+
+.admin-results {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.admin-agent-card {
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--paper);
+}
+
+.admin-agent-main {
+  display: grid;
+  gap: 4px;
+  min-width: 220px;
+}
+
+.admin-agent-main span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.admin-id {
+  font-size: 11px !important;
+}
+
+.admin-agent-actions {
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.admin-email-button {
+  display: inline-grid;
+  place-items: center;
+  text-decoration: none;
+}
+
+.admin-message {
+  width: 100%;
+  margin: 4px 0 0;
+  min-height: 18px;
+  font-size: 13px;
+}
+
+.link-button {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+}
+
+@media (max-width: 620px) {
+  .admin-shell {
+    width: min(100% - 20px, 920px);
+    margin: 12px auto;
+  }
+
+  .admin-header,
+  .admin-card-heading {
+    align-items: flex-start;
+  }
+
+  .admin-card {
+    padding: 16px;
+  }
+
+  .admin-search {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-agent-card {
+    display: grid;
+  }
+}
+
