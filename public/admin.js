@@ -8,6 +8,12 @@ const agentSearch = document.getElementById('agentSearch');
 const searchMessage = document.getElementById('searchMessage');
 const results = document.getElementById('results');
 const signOut = document.getElementById('signOut');
+const reportTestForm = document.getElementById('reportTestForm');
+const reportConnectionId = document.getElementById('reportConnectionId');
+const reportAddress = document.getElementById('reportAddress');
+const reportDate = document.getElementById('reportDate');
+const reportTestMessage = document.getElementById('reportTestMessage');
+const reportTestResults = document.getElementById('reportTestResults');
 
 let adminKey = sessionStorage.getItem('inspectologyAdminKey') || '';
 
@@ -135,6 +141,65 @@ function renderAgent(agent) {
     status
   ]);
 }
+
+reportTestForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  reportTestResults.replaceChildren();
+  reportTestMessage.textContent = 'Checking Spectora attachments...';
+
+  const params = new URLSearchParams({
+    connectionId: reportConnectionId.value.trim(),
+    address: reportAddress.value.trim()
+  });
+  if (reportDate.value) params.set('date', reportDate.value);
+
+  try {
+    const body = await api(`/api/admin/report-test?${params.toString()}`);
+    const inspection = body.inspection || {};
+    const pdfs = body.pdfAttachments || [];
+    const attachments = body.attachments || [];
+
+    reportTestMessage.textContent = pdfs.length
+      ? `Found ${pdfs.length} PDF attachment${pdfs.length === 1 ? '' : 's'} for this inspection.`
+      : `Found the inspection, but no PDF attachment was returned. Total attachments: ${attachments.length}.`;
+
+    const summary = el('div', { class: 'report-test-summary' }, [
+      el('strong', { text: inspection.fullAddress || reportAddress.value }),
+      el('span', { text: inspection.datetime ? new Date(inspection.datetime).toLocaleString() : '' }),
+      el('span', { text: inspection.publishedAt ? 'Published' : 'Not published' }),
+      el('span', { text: `Inspection ID ${inspection.id || ''}` })
+    ]);
+    reportTestResults.append(summary);
+
+    const rows = pdfs.length ? pdfs : attachments;
+    if (!rows.length) {
+      reportTestResults.append(el('p', { class: 'admin-message', text: 'No attachments were returned by Spectora.' }));
+      return;
+    }
+
+    for (const attachment of rows) {
+      const children = [
+        el('strong', { text: attachment.name || attachment.fileName || 'Attachment' }),
+        el('span', { text: attachment.fileName || attachment.attachmentType || '' }),
+        el('span', { text: attachment.report ? 'Report attachment' : 'Additional document' })
+      ];
+      if (attachment.fileUrl) {
+        children.push(
+          el('a', {
+            class: 'link-button',
+            href: attachment.fileUrl,
+            target: '_blank',
+            rel: 'noopener',
+            text: 'Open file'
+          })
+        );
+      }
+      reportTestResults.append(el('article', { class: 'report-file-card' }, children));
+    }
+  } catch (error) {
+    reportTestMessage.textContent = error.message;
+  }
+});
 
 signOut.addEventListener('click', () => {
   sessionStorage.removeItem('inspectologyAdminKey');
