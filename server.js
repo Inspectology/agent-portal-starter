@@ -500,7 +500,7 @@ function isAllowedSpectoraAssetHost(hostname) {
 }
 
 function fetchSpectoraPublicAsset(assetUrl, options = {}) {
-  const maxBytes = options.maxBytes || 3_000_000;
+  const maxBytes = options.maxBytes || 12_000_000;
   let url;
   try { url = new URL(assetUrl); }
   catch { return Promise.reject(authError('Invalid Spectora asset URL', 400)); }
