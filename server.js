@@ -417,6 +417,83 @@ function query(pathname, filters) {
   const params = new URLSearchParams(filters);
   return `${pathname}?${params.toString().replace(/%5B/g, '[').replace(/%5D/g, ']')}`;
 }
+function fetchPublishedSpectoraReport(reportUrl, options = {}) {
+  const maxBytes = options.maxBytes || 2_000_000;
+  let url;
+  try { url = new URL(reportUrl); }
+  catch { return Promise.reject(authError('Invalid Spectora report URL', 400)); }
+
+  if (
+    url.protocol !== 'https:' ||
+    url.hostname !== 'reports.spectora.com' ||
+    !/^\/v\/reports\/[0-9a-fA-F-]{36}$/.test(url.pathname)
+  ) {
+    return Promise.reject(authError('Only published reports.spectora.com report links are allowed', 400));
+  }
+
+  return new Promise((resolve, reject) => {
+    const request = https.get(url, {
+      headers: {
+        Accept: 'text/html,application/xhtml+xml',
+        'User-Agent': 'Inspectology-Agent-Dashboard/1.0'
+      },
+      timeout: 15_000
+    }, response => {
+      const statusCode = Number(response.statusCode || 0);
+
+      if (statusCode >= 300 && statusCode < 400 && response.headers.location) {
+        response.resume();
+        let next;
+        try { next = new URL(response.headers.location, url); }
+        catch { reject(new Error('Published report returned an invalid redirect')); return; }
+
+        if (next.protocol !== 'https:' || next.hostname !== 'reports.spectora.com') {
+          reject(new Error('Published report redirected outside reports.spectora.com'));
+          return;
+        }
+        fetchPublishedSpectoraReport(next.href, options).then(resolve, reject);
+        return;
+      }
+
+      const chunks = [];
+      let bytes = 0;
+      response.on('data', chunk => {
+        bytes += chunk.length;
+        if (bytes > maxBytes) {
+          reject(new Error('Published report page exceeded size limit'));
+          response.destroy();
+          return;
+        }
+        chunks.push(chunk);
+      });
+      response.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf8');
+        resolve({
+          statusCode,
+          contentType: String(response.headers['content-type'] || ''),
+          body,
+          finalUrl: url.href
+        });
+      });
+      response.on('error', reject);
+    });
+    request.on('timeout', () => request.destroy(new Error('Published report request timed out')));
+    request.on('error', reject);
+  });
+}
+
+function htmlToPlainText(html) {
+  return String(html || '')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 function createRateLimiter(config, nowMs) {
   const buckets = new Map();
@@ -690,6 +767,28 @@ function createPortal(options = {}) {
               /\.pdf(?:$|\?)/i.test(item.fileName) ||
               /\.pdf(?:$|\?)/i.test(item.fileUrl)
             )
+          });
+          status = 200;
+          return;
+        }
+        if (req.method === 'POST' && pathname === '/api/admin/report-link-test') {
+          const body = await readJsonBody(req);
+          const reportUrl = String(body.url || '').trim();
+          const result = await fetchPublishedSpectoraReport(reportUrl);
+
+          const plainText = htmlToPlainText(result.body);
+          const titleMatch = result.body.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+          const title = titleMatch ? htmlToPlainText(titleMatch[1]) : '';
+
+          sendJson(res, 200, {
+            statusCode: result.statusCode,
+            contentType: result.contentType,
+            title,
+            htmlBytes: Buffer.byteLength(result.body, 'utf8'),
+            textCharacters: plainText.length,
+            containsAddress: /948\s+Glenangus\s+Dr/i.test(plainText),
+            containsInspectionTerms: /(roof|electrical|plumbing|foundation|inspection|summary|defect)/i.test(plainText),
+            textPreview: plainText.slice(0, 1200)
           });
           status = 200;
           return;
