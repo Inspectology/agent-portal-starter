@@ -196,28 +196,57 @@ networkTestForm.addEventListener('submit', async event => {
     });
 
     const candidates = body.endpointCandidates || [];
+    const strings = body.interestingStrings || [];
+    const contexts = body.bundleContexts || [];
     const scripts = body.scannedScripts || [];
 
-    networkTestMessage.textContent = candidates.length
-      ? `Found ${candidates.length} possible report-data endpoint${candidates.length === 1 ? '' : 's'}.`
-      : `Scanned ${scripts.length} script file${scripts.length === 1 ? '' : 's'}, but no clear endpoint strings were found.`;
+    networkTestMessage.textContent = candidates.length || strings.length || contexts.length
+      ? `Found ${candidates.length} endpoint candidates, ${strings.length} relevant strings, and ${contexts.length} code contexts.`
+      : `Scanned ${scripts.length} script file${scripts.length === 1 ? '' : 's'}, but no useful report-loading clues were found.`;
 
     const scriptSummary = el('div', { class: 'report-test-summary' }, [
-      el('strong', { text: 'Spectora Report Viewer scan' }),
+      el('strong', { text: 'Spectora Report Viewer deep scan' }),
       el('span', { text: `Report HTTP ${body.reportStatus || ''}` }),
-      el('span', { text: `Scripts found: ${(body.scriptSources || []).length} | Scripts scanned: ${scripts.filter(item => item.scanned).length}` })
+      el('span', { text: `Scripts found: ${(body.scriptSources || []).length} | Scripts scanned: ${scripts.filter(item => item.scanned).length}` }),
+      el('span', { text: `Relevant strings: ${strings.length} | Context snippets: ${contexts.length}` })
     ]);
     networkTestResults.append(scriptSummary);
 
-    for (const candidate of candidates) {
-      networkTestResults.append(
-        el('div', { class: 'endpoint-candidate' }, [
-          el('code', { text: candidate })
-        ])
-      );
+    if (candidates.length) {
+      networkTestResults.append(el('h3', { class: 'scan-subheading', text: 'Likely endpoints / hosts' }));
+      for (const candidate of candidates) {
+        networkTestResults.append(
+          el('div', { class: 'endpoint-candidate' }, [
+            el('code', { text: candidate })
+          ])
+        );
+      }
     }
 
-    if (!candidates.length && scripts.length) {
+    if (strings.length) {
+      networkTestResults.append(el('h3', { class: 'scan-subheading', text: 'Relevant strings' }));
+      for (const value of strings.slice(0, 60)) {
+        networkTestResults.append(
+          el('div', { class: 'endpoint-candidate endpoint-string' }, [
+            el('code', { text: value })
+          ])
+        );
+      }
+    }
+
+    if (contexts.length) {
+      networkTestResults.append(el('h3', { class: 'scan-subheading', text: 'Bundle context' }));
+      for (const item of contexts) {
+        networkTestResults.append(
+          el('article', { class: 'bundle-context-card' }, [
+            el('strong', { text: item.needle || 'Context' }),
+            el('code', { text: item.snippet || '' })
+          ])
+        );
+      }
+    }
+
+    if (!candidates.length && !strings.length && !contexts.length && scripts.length) {
       for (const script of scripts) {
         networkTestResults.append(
           el('div', { class: 'report-file-card' }, [
