@@ -855,3 +855,42 @@ input:focus-visible,
   white-space: pre-wrap;
 }
 
+.scan-subheading {
+  margin: 12px 0 2px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 850;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.endpoint-string {
+  border-left-color: #4d4d4d;
+}
+
+.bundle-context-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--brand);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.bundle-context-card strong {
+  color: var(--brand);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.bundle-context-card code {
+  max-height: 240px;
+  overflow: auto;
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
