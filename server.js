@@ -380,7 +380,7 @@ function loadStaticSnapshot(publicDir) {
         files.set(key, Object.freeze({
           body: fs.readFileSync(descriptor),
           contentType: MIME_TYPES[ext] || 'application/octet-stream',
-          cacheControl: ext === '.html' ? 'no-cache' : 'public, max-age=86400'
+          cacheControl: ['.html', '.js', '.css', '.webmanifest'].includes(ext) ? 'no-cache' : 'public, max-age=86400'
         }));
       } finally {
         fs.closeSync(descriptor);
