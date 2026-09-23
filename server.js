@@ -61,6 +61,16 @@ function validatedHttpsUrl(value, name) {
   return url.href;
 }
 
+function validatedOrigin(value, name) {
+  if (!value) return '';
+  let url;
+  try { url = new URL(value); } catch { throw new Error(`${name} must be a bare HTTPS origin`); }
+  if (url.protocol !== 'https:' || url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
+    throw new Error(`${name} must be a bare HTTPS origin`);
+  }
+  return url.origin;
+}
+
 function validatedColor(value, name) {
   if (!value) return value;
   if (!/^#[0-9a-fA-F]{6}$/.test(value)) throw new Error(`${name} must be a six-digit hex color`);
@@ -98,6 +108,11 @@ function createConfig(env = process.env) {
     apiKey: String(env.SPECTORA_API_KEY || '').trim().replace(/^Bearer\s+/i, ''),
     companyId: mode === 'live' ? validatedPositiveDecimalId(env.SPECTORA_COMPANY_ID, 'SPECTORA_COMPANY_ID') : '',
     signingSecret: env.PORTAL_SIGNING_SECRET || '',
+    adminAccessKey: String(env.ADMIN_ACCESS_KEY || '').trim(),
+    publicOrigin: validatedOrigin(
+      env.PORTAL_PUBLIC_ORIGIN || (env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${env.VERCEL_PROJECT_PRODUCTION_URL}` : ''),
+      'PORTAL_PUBLIC_ORIGIN'
+    ),
     upstreamTimeoutMs: boundedInteger(env.UPSTREAM_TIMEOUT_MS, DEFAULT_TIMEOUT_MS, 100, 30_000),
     upstreamMaxBytes: boundedInteger(env.UPSTREAM_MAX_BYTES, DEFAULT_MAX_BYTES, 1024, 5_000_000),
     rateLimitMax: boundedInteger(env.RATE_LIMIT_MAX, 60, 1, 1000),
@@ -221,6 +236,49 @@ function sendJson(res, status, payload) {
 function bearerToken(req) {
   const match = String(req.headers.authorization || '').match(/^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/);
   return match?.[1];
+}
+
+function constantTimeTextEqual(left, right) {
+  const a = Buffer.from(String(left || ''), 'utf8');
+  const b = Buffer.from(String(right || ''), 'utf8');
+  return a.length > 0 && a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function adminAuthorized(req, config) {
+  return constantTimeTextEqual(req.headers['x-admin-key'], config.adminAccessKey);
+}
+
+function readJsonBody(req, maxBytes = 16_384) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let bytes = 0;
+    req.on('data', chunk => {
+      bytes += chunk.length;
+      if (bytes > maxBytes) {
+        reject(authError('Request body too large', 413));
+        req.destroy?.();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'));
+      } catch {
+        reject(authError('Malformed JSON request', 400));
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+function resolvePortalOrigin(req, config) {
+  if (config.publicOrigin) return config.publicOrigin;
+  const host = String(req.headers.host || '').trim();
+  if (!/^[A-Za-z0-9.-]+(?::[0-9]+)?$/.test(host)) throw authError('Portal public origin is not configured', 500);
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  const protocol = forwardedProto === 'http' && /^localhost(?::|$)/.test(host) ? 'http' : 'https';
+  return `${protocol}://${host}`;
 }
 
 function assertCompanyScope(records, companyId) {
@@ -401,25 +459,25 @@ function createPortal(options = {}) {
   const log = options.log || (entry => process.stdout.write(`${JSON.stringify(entry)}\n`));
   const allowRequest = createRateLimiter(config, nowMs);
 
+  async function fetchUpstream(stage, endpoint) {
+    try {
+      return await upstreamGet(endpoint);
+    } catch (error) {
+      error.safeDetail = error instanceof UpstreamHttpError
+        ? `${stage} returned HTTP ${error.upstreamStatus}`
+        : `${stage} failed: ${error.message}`;
+      throw error;
+    }
+  }
+
   async function getAgentPayload(connectionId) {
     const sample = applyCustomization(readSampleAgent(), config.branding, config.demoAgent, config.demoTier);
     if (config.mode === 'demo') return { ...sample, meta: { mode: 'demo' } };
     const scope = config.companyId;
 
-    async function getUpstream(stage, endpoint) {
-      try {
-        return await upstreamGet(endpoint);
-      } catch (error) {
-        error.safeDetail = error instanceof UpstreamHttpError
-          ? `${stage} returned HTTP ${error.upstreamStatus}`
-          : `${stage} failed: ${error.message}`;
-        throw error;
-      }
-    }
-
     let connections;
     try {
-      connections = await getUpstream('Connection lookup', `/v2/connections/${encodeURIComponent(connectionId)}`);
+      connections = await fetchUpstream('Connection lookup', `/v2/connections/${encodeURIComponent(connectionId)}`);
     } catch (error) {
       if (error instanceof UpstreamHttpError && error.upstreamStatus === 404) return null;
       throw error;
@@ -427,13 +485,13 @@ function createPortal(options = {}) {
     const connection = connections.data;
     assertRecordId(connection, connectionId, 'connection');
     assertCompanyScope([connection], scope);
-    const stats = await getUpstream('Connection stats lookup', query('/v2/connection_stats', {
+    const stats = await fetchUpstream('Connection stats lookup', query('/v2/connection_stats', {
       'filter[id]': connectionId, 'page[size]': '1'
     }));
     if (!Array.isArray(stats.data) || stats.data.length !== 1) throw authError('Upstream stats record missing or ambiguous', 403);
     assertRecordId(stats.data[0], connectionId, 'stats');
     assertCompanyScope(stats.data, scope);
-    const inspections = await getUpstream('Inspection history lookup', query('/v2/inspections', {
+    const inspections = await fetchUpstream('Inspection history lookup', query('/v2/inspections', {
       'filter[connection_id]': connectionId, include: 'buying_agent,selling_agent,company', sort: '-datetime', 'page[size]': '50'
     }));
     if (!Array.isArray(inspections.data)) throw authError('Upstream inspections data missing', 403);
@@ -467,7 +525,9 @@ function createPortal(options = {}) {
   }
 
   function sendStatic(res, pathname) {
-    const requested = pathname === '/' || pathname.startsWith('/agent/') ? '/index.html' : pathname;
+    const requested = pathname === '/admin' || pathname.startsWith('/admin/')
+      ? '/admin.html'
+      : (pathname === '/' || pathname.startsWith('/agent/') ? '/index.html' : pathname);
     let decoded;
     try { decoded = decodeURIComponent(requested); } catch { sendJson(res, 400, { error: 'Malformed URL' }); return; }
     if (decoded.includes('\0') || decoded.includes('\\') || decoded.split('/').includes('..')) { sendJson(res, 403, { error: 'Forbidden' }); return; }
@@ -490,6 +550,53 @@ function createPortal(options = {}) {
       pathname = url.pathname;
       if (req.method === 'GET' && pathname === '/api/health') {
         sendJson(res, 200, { status: 'ok', service: 'spectora-agent-portal', mode: config.mode }); status = 200; return;
+      }
+      if (pathname.startsWith('/api/admin/')) {
+        if (!config.adminAccessKey) {
+          sendJson(res, 503, { error: 'Admin access is not configured' }); status = 503; return;
+        }
+        if (!adminAuthorized(req, config)) {
+          sendJson(res, 401, { error: 'Invalid admin access key' }); status = 401; return;
+        }
+        if (req.method === 'GET' && pathname === '/api/admin/session') {
+          sendJson(res, 200, { status: 'ok' }); status = 200; return;
+        }
+        if (req.method === 'GET' && pathname === '/api/admin/agents') {
+          const search = String(url.searchParams.get('q') || '').trim();
+          if (search.length < 2 || search.length > 120) {
+            sendJson(res, 400, { error: 'Search must be between 2 and 120 characters' }); status = 400; return;
+          }
+          const matches = await fetchUpstream('Agent search', query('/v2/connections', {
+            'filter[fulltext]': search, 'page[size]': '20'
+          }));
+          if (!Array.isArray(matches.data)) throw authError('Upstream agent search data missing', 502);
+          assertCompanyScope(matches.data, config.companyId);
+          const agents = matches.data.map(record => {
+            const attrs = record.attributes || {};
+            return {
+              connectionId: String(record.id || ''),
+              firstName: attrs.first_name || '',
+              lastName: attrs.last_name || '',
+              agency: attrs.agency_name || '',
+              email: attrs.email || '',
+              phone: attrs.phone || attrs.phone_number || ''
+            };
+          }).filter(agent => /^[1-9][0-9]*$/.test(agent.connectionId));
+          sendJson(res, 200, { agents }); status = 200; return;
+        }
+        if (req.method === 'POST' && pathname === '/api/admin/invite') {
+          const body = await readJsonBody(req);
+          const connectionId = validatedPositiveDecimalId(body.connectionId, 'Spectora connection ID');
+          const connectionResponse = await fetchUpstream('Invite agent lookup', `/v2/connections/${encodeURIComponent(connectionId)}`);
+          assertRecordId(connectionResponse.data, connectionId, 'connection');
+          assertCompanyScope([connectionResponse.data], config.companyId);
+          const ttlSeconds = 2_592_000;
+          const grant = createGrant(connectionId, config.signingSecret, { ttlSeconds, now: nowSeconds() });
+          const origin = resolvePortalOrigin(req, config);
+          const inviteUrl = `${origin}/agent/${connectionId}#grant=${grant}`;
+          sendJson(res, 200, { inviteUrl, expiresInDays: 30 }); status = 200; return;
+        }
+        sendJson(res, 405, { error: 'Admin operation not allowed' }); status = 405; return;
       }
       if (req.method === 'GET' && pathname.startsWith('/api/agent/')) {
         const connectionId = pathname.slice('/api/agent/'.length).split('/')[0];
@@ -521,9 +628,11 @@ function createPortal(options = {}) {
     } finally {
       const route = pathname === '/api/health'
         ? '/api/health'
-        : (pathname.startsWith('/api/agent/')
-            ? '/api/agent/:id'
-            : (pathname.startsWith('/agent/') ? '/agent/:id' : '/:static-or-not-found'));
+        : (pathname.startsWith('/api/admin/')
+            ? '/api/admin/:operation'
+            : (pathname.startsWith('/api/agent/')
+                ? '/api/agent/:id'
+                : (pathname.startsWith('/agent/') ? '/agent/:id' : (pathname.startsWith('/admin') ? '/admin' : '/:static-or-not-found'))));
       log({ method: req.method, route, status, durationMs: Math.max(0, nowMs() - startedAt) });
     }
   }
