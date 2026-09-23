@@ -68,6 +68,24 @@
 
         <div class="admin-divider"></div>
 
+        <section class="report-test-panel" aria-labelledby="networkTestHeading">
+          <div>
+            <h2 id="networkTestHeading">Report Viewer Endpoint Scan</h2>
+            <p>Scan the public Spectora Report Viewer scripts for likely API paths used to load report content.</p>
+          </div>
+          <form id="networkTestForm" class="report-link-form">
+            <label class="form-field">
+              <span>Spectora published report URL</span>
+              <input id="networkTestUrl" type="url" value="https://reports.spectora.com/v/reports/f1434136-3ff4-49b2-ba8d-f3aa128fb8cc?ignoreClientComplete=true" required>
+            </label>
+            <button class="primary-button" type="submit">Scan Report Viewer</button>
+          </form>
+          <p id="networkTestMessage" class="admin-message" aria-live="polite"></p>
+          <div id="networkTestResults" class="report-test-results"></div>
+        </section>
+
+        <div class="admin-divider"></div>
+
         <section class="report-test-panel" aria-labelledby="reportTestHeading">
           <div>
             <h2 id="reportTestHeading">Report PDF Test</h2>
