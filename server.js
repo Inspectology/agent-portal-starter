@@ -332,9 +332,36 @@ function mapInspection(insp) {
   const attrs = insp.attributes || {};
   const parsedDate = attrs.datetime ? new Date(attrs.datetime) : null;
   const date = parsedDate && !Number.isNaN(parsedDate.getTime()) ? parsedDate.toISOString().slice(0, 10) : '';
+
+  const fullAddress = [
+    attrs.property_address,
+    attrs.property_full_address,
+    attrs.address
+  ].find(value => typeof value === 'string' && value.trim());
+
+  const street = [
+    attrs.property_street,
+    attrs.property_street_address,
+    attrs.street_address,
+    attrs.address_line_1
+  ].find(value => typeof value === 'string' && value.trim());
+
+  const city = attrs.property_city || attrs.city || '';
+  const state = attrs.property_state || attrs.state || '';
+  const zip = attrs.property_zip || attrs.property_zip_code || attrs.zip || '';
+
+  const locality = [
+    [city, state].filter(Boolean).join(', '),
+    zip
+  ].filter(Boolean).join(' ');
+
+  const location = fullAddress
+    ? fullAddress.trim()
+    : [street, locality].filter(Boolean).join(', ') || 'Location unavailable';
+
   return {
     date,
-    location: [attrs.property_city, attrs.property_state].filter(Boolean).join(', ') || 'Location withheld',
+    location,
     services: [attrs.service_names, attrs.service_add_on_names].filter(Boolean).join(' + '),
     inspector: attrs.inspector_name || '',
     status: attrs.canceled_at ? 'Canceled' : (attrs.published_at ? 'Report Published' : 'Scheduled'),
