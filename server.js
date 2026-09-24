@@ -115,6 +115,11 @@ function createConfig(env = process.env) {
       rateLimitMax: boundedInteger(env.AI_RATE_LIMIT_MAX, 10, 1, 100),
       rateLimitWindowMs: boundedInteger(env.AI_RATE_LIMIT_WINDOW_MS, 60_000, 1000, 3_600_000)
     },
+    profileNotifications: {
+      resendApiKey: String(env.RESEND_API_KEY || '').trim(),
+      to: String(env.PROFILE_CHANGE_EMAIL_TO || '').trim(),
+      from: String(env.PROFILE_CHANGE_EMAIL_FROM || '').trim()
+    },
     googleDrive: {
       projectNumber: String(env.GOOGLE_CLOUD_PROJECT_NUMBER || '').trim(),
       poolId: String(env.GOOGLE_WORKLOAD_IDENTITY_POOL_ID || '').trim(),
@@ -520,6 +525,104 @@ function googleDriveDownloadFile(accessToken, fileId, maxBytes = 30_000_000) {
     request.on('timeout', () => request.destroy(new Error('Google Drive file download timed out')));
     request.on('error', reject);
   });
+}
+
+function streamGoogleDrivePdf(res, accessToken, fileId, filename) {
+  const id = encodeURIComponent(String(fileId || ''));
+  const url = new URL(`https://www.googleapis.com/drive/v3/files/${id}?alt=media&supportsAllDrives=true`);
+
+  return new Promise((resolve, reject) => {
+    const request = https.get(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      timeout: 30_000
+    }, response => {
+      if (response.statusCode < 200 || response.statusCode > 299) {
+        const statusCode = Number(response.statusCode || 0);
+        response.resume();
+        reject(new Error(`Google Drive report returned HTTP ${statusCode}`));
+        return;
+      }
+
+      const safeFilename = String(filename || 'inspection-report.pdf')
+        .replace(/[\r\n"]/g, '')
+        .slice(0, 180);
+
+      res.writeHead(200, headers({
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': `inline; filename="${safeFilename}"`,
+        'Cache-Control': 'private, no-store, max-age=0'
+      }));
+
+      response.pipe(res);
+      response.on('end', resolve);
+      response.on('error', reject);
+    });
+    request.on('timeout', () => request.destroy(new Error('Google Drive report request timed out')));
+    request.on('error', reject);
+  });
+}
+
+async function sendProfileChangeNotification(config, connectionId, agent, changes) {
+  const email = config.profileNotifications || {};
+  if (!email.resendApiKey || !email.to || !email.from) {
+    return { sent: false, reason: 'not_configured' };
+  }
+
+  const labels = {
+    firstName: 'First name',
+    lastName: 'Last name',
+    agency: 'Brokerage / agency',
+    phone: 'Phone',
+    email: 'Email',
+    city: 'City',
+    state: 'State'
+  };
+
+  const changedLines = changes.map(change =>
+    `${labels[change.field] || change.field}: "${change.oldValue || '(blank)'}" → "${change.newValue || '(blank)'}"`
+  );
+
+  const agentName = [agent.firstName, agent.lastName].filter(Boolean).join(' ') || 'Agent';
+  const message = [
+    'An agent updated information in the Inspectology Agent Dashboard.',
+    '',
+    `Agent: ${agentName}`,
+    `Spectora connection ID: ${connectionId}`,
+    `Current Spectora email: ${agent.email || '(none)'}`,
+    '',
+    'Requested profile updates:',
+    ...changedLines,
+    '',
+    'Please review and update the agent record in Spectora as appropriate.'
+  ].join('\n');
+
+  const requestBody = JSON.stringify({
+    from: email.from,
+    to: [email.to],
+    subject: `Agent profile update requested: ${agentName}`,
+    text: message
+  });
+
+  const response = await requestJson(
+    'https://api.resend.com/emails',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${email.resendApiKey}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(requestBody)
+      },
+      timeout: 15_000
+    },
+    requestBody,
+    300_000
+  );
+
+  if (response.statusCode < 200 || response.statusCode > 299) {
+    return { sent: false, reason: 'provider_error' };
+  }
+
+  return { sent: true };
 }
 
 function openAiOutputText(payload) {
@@ -1674,6 +1777,84 @@ function createPortal(options = {}) {
             folderFound: Boolean(backup.folder),
             reportName: backup.fullReport?.name || '',
             inspection
+          });
+          status = 200;
+          return;
+        }
+
+        if (req.method === 'GET' && operation === 'report') {
+          const inspectionId = String(url.searchParams.get('inspectionId') || '').trim();
+          const payload = await getAgentPayload(connectionId);
+          if (!payload) { sendJson(res, 404, { error: 'Agent not found' }); status = 404; return; }
+
+          const inspection = (payload.inspections || []).find(item => String(item.id || '') === inspectionId);
+          if (!inspection || !inspection.published) {
+            sendJson(res, 404, { error: 'Published inspection not found for this agent' }); status = 404; return;
+          }
+
+          if (config.mode === 'demo') {
+            sendJson(res, 404, { error: 'Report viewing is unavailable in demo mode' }); status = 404; return;
+          }
+
+          const backup = await findGoogleDriveBackup(
+            config,
+            String(req.headers['x-vercel-oidc-token'] || ''),
+            inspection.location,
+            inspection.date
+          );
+
+          if (!backup.fullReport) {
+            sendJson(res, 404, { error: 'Full inspection report PDF is not available yet' }); status = 404; return;
+          }
+
+          status = 200;
+          await streamGoogleDrivePdf(res, backup.token, backup.fullReport.id, backup.fullReport.name);
+          return;
+        }
+
+        if (req.method === 'POST' && operation === 'profile-change') {
+          const body = await readJsonBody(req, 16_000);
+          const incoming = body.profile && typeof body.profile === 'object' ? body.profile : {};
+          const payload = await getAgentPayload(connectionId);
+          if (!payload) { sendJson(res, 404, { error: 'Agent not found' }); status = 404; return; }
+
+          const allowedFields = ['firstName', 'lastName', 'agency', 'phone', 'email', 'city', 'state'];
+          const changes = [];
+
+          for (const field of allowedFields) {
+            if (!Object.hasOwn(incoming, field)) continue;
+            const oldValue = String(payload.agent?.[field] || '').trim();
+            const newValue = String(incoming[field] || '').trim().slice(0, 240);
+            if (oldValue !== newValue) changes.push({ field, oldValue, newValue });
+          }
+
+          if (!changes.length) {
+            sendJson(res, 200, { notificationSent: false, noChanges: true, changedFields: [] });
+            status = 200;
+            return;
+          }
+
+          if (config.mode === 'demo') {
+            sendJson(res, 200, {
+              notificationSent: true,
+              demo: true,
+              changedFields: changes.map(change => change.field)
+            });
+            status = 200;
+            return;
+          }
+
+          const notification = await sendProfileChangeNotification(
+            config,
+            connectionId,
+            payload.agent,
+            changes
+          );
+
+          sendJson(res, 200, {
+            notificationSent: notification.sent,
+            notificationStatus: notification.reason || 'sent',
+            changedFields: changes.map(change => change.field)
           });
           status = 200;
           return;
