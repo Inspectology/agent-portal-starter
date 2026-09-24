@@ -198,10 +198,11 @@ networkTestForm.addEventListener('submit', async event => {
     const candidates = body.endpointCandidates || [];
     const strings = body.interestingStrings || [];
     const contexts = body.bundleContexts || [];
+    const hermesContexts = body.hermesContexts || [];
     const scripts = body.scannedScripts || [];
 
-    networkTestMessage.textContent = candidates.length || strings.length || contexts.length
-      ? `Found ${candidates.length} endpoint candidates, ${strings.length} relevant strings, and ${contexts.length} code contexts.`
+    networkTestMessage.textContent = candidates.length || strings.length || contexts.length || hermesContexts.length
+      ? `Found ${candidates.length} endpoint candidates and ${hermesContexts.length} Hermes API context snippets.`
       : `Scanned ${scripts.length} script file${scripts.length === 1 ? '' : 's'}, but no useful report-loading clues were found.`;
 
     const scriptSummary = el('div', { class: 'report-test-summary' }, [
@@ -229,6 +230,18 @@ networkTestForm.addEventListener('submit', async event => {
         networkTestResults.append(
           el('div', { class: 'endpoint-candidate endpoint-string' }, [
             el('code', { text: value })
+          ])
+        );
+      }
+    }
+
+    if (hermesContexts.length) {
+      networkTestResults.append(el('h3', { class: 'scan-subheading', text: 'Hermes API context' }));
+      for (const item of hermesContexts) {
+        networkTestResults.append(
+          el('article', { class: 'bundle-context-card hermes-context-card' }, [
+            el('strong', { text: item.needle || 'Hermes' }),
+            el('code', { text: item.snippet || '' })
           ])
         );
       }
