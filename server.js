@@ -1582,7 +1582,36 @@ function createPortal(options = {}) {
           sendJson(res, 401, { error: 'Invalid admin access key' }); status = 401; return;
         }
         if (req.method === 'GET' && pathname === '/api/admin/session') {
-          sendJson(res, 200, { status: 'ok' }); status = 200; return;
+          const drive = config.googleDrive || {};
+          const profileEmail = config.profileNotifications || {};
+          sendJson(res, 200, {
+            status: 'ok',
+            readiness: {
+              environment: config.deploymentEnvironment || config.mode || 'unknown',
+              spectora: Boolean(
+                config.mode === 'live' &&
+                config.apiKey &&
+                config.companyId &&
+                config.signingSecret
+              ),
+              googleDrive: Boolean(
+                drive.projectNumber &&
+                drive.poolId &&
+                drive.providerId &&
+                drive.serviceAccountEmail &&
+                drive.backupFolderId
+              ),
+              openAi: Boolean(config.ai?.apiKey),
+              profileEmail: Boolean(
+                profileEmail.resendApiKey &&
+                profileEmail.to &&
+                profileEmail.from
+              ),
+              adminAccess: Boolean(config.adminAccessKey)
+            }
+          });
+          status = 200;
+          return;
         }
         if (req.method === 'GET' && pathname === '/api/admin/agents') {
           const search = String(url.searchParams.get('q') || '').trim();
