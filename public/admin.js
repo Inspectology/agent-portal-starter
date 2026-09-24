@@ -22,6 +22,10 @@ const networkTestForm = document.getElementById('networkTestForm');
 const networkTestUrl = document.getElementById('networkTestUrl');
 const networkTestMessage = document.getElementById('networkTestMessage');
 const networkTestResults = document.getElementById('networkTestResults');
+const reportApiTestForm = document.getElementById('reportApiTestForm');
+const reportApiTestUrl = document.getElementById('reportApiTestUrl');
+const reportApiTestMessage = document.getElementById('reportApiTestMessage');
+const reportApiTestResults = document.getElementById('reportApiTestResults');
 
 let adminKey = sessionStorage.getItem('inspectologyAdminKey') || '';
 
@@ -181,6 +185,65 @@ reportLinkTestForm.addEventListener('submit', async event => {
     );
   } catch (error) {
     reportLinkTestMessage.textContent = error.message;
+  }
+});
+
+reportApiTestForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  reportApiTestResults.replaceChildren();
+  reportApiTestMessage.textContent = 'Calling Spectora public report API...';
+
+  try {
+    const body = await api('/api/admin/report-api-test', {
+      method: 'POST',
+      body: JSON.stringify({ url: reportApiTestUrl.value.trim() })
+    });
+
+    const success = body.statusCode >= 200 && body.statusCode < 300 && body.json;
+    reportApiTestMessage.textContent = success
+      ? (body.containsReportContent
+          ? 'Success. Spectora returned structured report data from the public report API.'
+          : 'Spectora returned JSON, but the response does not yet look like the full report content.')
+      : `Spectora returned HTTP ${body.statusCode}. JSON response: ${body.json ? 'Yes' : 'No'}.`;
+
+    reportApiTestResults.append(
+      el('div', { class: 'report-test-summary' }, [
+        el('strong', { text: 'Hermes public report API' }),
+        el('span', { text: `Report UUID: ${body.reportUuid || ''}` }),
+        el('span', { text: `HTTP ${body.statusCode} | ${body.contentType || 'Unknown content type'}` }),
+        el('span', { text: `Response bytes: ${body.responseBytes || 0} | JSON: ${body.json ? 'Yes' : 'No'}` }),
+        el('span', { text: `Address found: ${body.containsAddress ? 'Yes' : 'No'} | Report content terms: ${body.containsReportContent ? 'Yes' : 'No'}` })
+      ])
+    );
+
+    if ((body.topLevelKeys || []).length) {
+      reportApiTestResults.append(el('h3', { class: 'scan-subheading', text: 'Top-level keys' }));
+      reportApiTestResults.append(
+        el('div', { class: 'endpoint-candidate endpoint-string' }, [
+          el('code', { text: body.topLevelKeys.join(', ') })
+        ])
+      );
+    }
+
+    if ((body.jsonShape || []).length) {
+      reportApiTestResults.append(el('h3', { class: 'scan-subheading', text: 'JSON shape' }));
+      for (const value of body.jsonShape.slice(0, 100)) {
+        reportApiTestResults.append(
+          el('div', { class: 'endpoint-candidate endpoint-string' }, [
+            el('code', { text: value })
+          ])
+        );
+      }
+    }
+
+    reportApiTestResults.append(
+      el('div', { class: 'bundle-context-card' }, [
+        el('strong', { text: 'Response preview' }),
+        el('code', { text: body.preview || 'No response body.' })
+      ])
+    );
+  } catch (error) {
+    reportApiTestMessage.textContent = error.message;
   }
 });
 
