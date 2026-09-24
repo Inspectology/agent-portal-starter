@@ -899,3 +899,12 @@ input:focus-visible,
   max-height: 340px;
 }
 
+.auth-scan-heading {
+  color: var(--brand);
+}
+
+.auth-context-card {
+  border-left-width: 6px;
+  background: rgba(169, 5, 51, 0.035);
+}
+
