@@ -87,6 +87,19 @@ function getConnectionId() {
   return auth.connectionId || 'demo-platinum-partner';
 }
 
+async function portalApi(path, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  if (auth.grant) headers.Authorization = `Bearer ${auth.grant}`;
+  if (options.body && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
+
+  const response = await fetch(path, { ...options, headers, cache: 'no-store' });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(body.detail || body.error || `Request failed: ${response.status}`);
+  }
+  return body;
+}
+
 function profileKey() {
   return `agentProfile:${getConnectionId()}`;
 }
@@ -189,6 +202,197 @@ function renderProfileSection(agent) {
   ]);
 }
 
+function aiMessage(role, message) {
+  return el('div', { class: `ai-message ai-message-${role}` }, [
+    el('div', { class: 'ai-message-label', text: role === 'user' ? 'You' : 'Inspectology AI' }),
+    el('div', { class: 'ai-message-text', text: message })
+  ]);
+}
+
+function openInspectologyAi(inspection) {
+  document.querySelector('.ai-overlay')?.remove();
+
+  const history = [];
+  const status = el('div', { class: 'ai-report-status ai-report-checking' }, [
+    el('span', { class: 'ai-status-dot', 'aria-hidden': 'true' }),
+    el('span', { text: 'Checking inspection report…' })
+  ]);
+  const messages = el('div', { class: 'ai-messages', 'aria-live': 'polite' });
+  const input = el('input', {
+    class: 'ai-question-input',
+    type: 'text',
+    placeholder: 'Ask about this inspection…',
+    maxlength: '1200',
+    autocomplete: 'off',
+    disabled: true
+  });
+  const sendButton = el('button', {
+    class: 'ai-send-button',
+    type: 'submit',
+    text: 'Ask',
+    disabled: true
+  });
+
+  const form = el('form', { class: 'ai-question-form' }, [input, sendButton]);
+
+  const closePanel = () => {
+    overlay.classList.remove('ai-overlay-open');
+    setTimeout(() => overlay.remove(), 160);
+    document.removeEventListener('keydown', onKeyDown);
+  };
+
+  const onKeyDown = event => {
+    if (event.key === 'Escape') closePanel();
+  };
+
+  const quickPrompts = [
+    'Summarize the major concerns',
+    'What did the report say about the roof?',
+    'Show me the electrical concerns',
+    'Summarize HVAC ages and concerns',
+    'What should I discuss with my buyer?'
+  ];
+
+  const quickPromptWrap = el('div', { class: 'ai-quick-prompts' });
+  for (const prompt of quickPrompts) {
+    quickPromptWrap.append(
+      el('button', {
+        class: 'ai-prompt-chip',
+        type: 'button',
+        text: prompt,
+        onclick: () => {
+          if (input.disabled) return;
+          input.value = prompt;
+          form.requestSubmit();
+        }
+      })
+    );
+  }
+
+  const panel = el('section', {
+    class: 'ai-sheet',
+    role: 'dialog',
+    'aria-modal': 'true',
+    'aria-label': 'Ask Inspectology AI'
+  }, [
+    el('div', { class: 'ai-sheet-header' }, [
+      el('div', {}, [
+        el('div', { class: 'ai-brand-row' }, [
+          el('span', { class: 'ai-spark', text: '✦', 'aria-hidden': 'true' }),
+          el('span', { class: 'ai-brand-name', text: 'Ask Inspectology AI' })
+        ]),
+        el('h2', { class: 'ai-property-title', text: inspection.location || inspection.address || 'Inspection report' }),
+        el('p', { class: 'ai-property-meta', text: [fmtDate(inspection.date), inspection.inspector].filter(Boolean).join(' • ') })
+      ]),
+      el('button', {
+        class: 'ai-close',
+        type: 'button',
+        text: '×',
+        'aria-label': 'Close Inspectology AI',
+        onclick: closePanel
+      })
+    ]),
+    status,
+    el('p', {
+      class: 'ai-intro',
+      text: 'Ask questions about this inspection. Answers are grounded in the selected Inspectology report and should be read alongside the full report.'
+    }),
+    quickPromptWrap,
+    messages,
+    el('div', { class: 'ai-composer' }, [
+      form,
+      el('p', {
+        class: 'ai-disclaimer',
+        text: 'Inspectology AI explains report content. It does not replace the inspector, the full report, or professional advice.'
+      })
+    ])
+  ]);
+
+  const overlay = el('div', {
+    class: 'ai-overlay',
+    onclick: event => {
+      if (event.target === overlay) closePanel();
+    }
+  }, [panel]);
+
+  document.body.append(overlay);
+  document.addEventListener('keydown', onKeyDown);
+  requestAnimationFrame(() => overlay.classList.add('ai-overlay-open'));
+
+  messages.append(
+    aiMessage(
+      'assistant',
+      'I can help you understand this inspection report. Try one of the questions above or ask me about a specific system, concern, or recommendation.'
+    )
+  );
+
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const question = input.value.trim();
+    if (!question || input.disabled) return;
+
+    const priorHistory = history.slice(-6);
+    history.push({ role: 'user', text: question });
+    messages.append(aiMessage('user', question));
+    input.value = '';
+    input.disabled = true;
+    sendButton.disabled = true;
+
+    const thinking = aiMessage('assistant', 'Reviewing the inspection report…');
+    thinking.classList.add('ai-thinking');
+    messages.append(thinking);
+    messages.scrollTop = messages.scrollHeight;
+
+    try {
+      const body = await portalApi(`/api/agent/${encodeURIComponent(getConnectionId())}/ask-report`, {
+        method: 'POST',
+        body: JSON.stringify({
+          inspectionId: inspection.id,
+          question,
+          history: priorHistory
+        })
+      });
+      thinking.remove();
+      const answer = body.answer || 'No answer was returned.';
+      history.push({ role: 'assistant', text: answer });
+      messages.append(aiMessage('assistant', answer));
+    } catch (error) {
+      thinking.remove();
+      messages.append(
+        aiMessage('assistant', `I couldn't answer that yet. ${error.message}`)
+      );
+    } finally {
+      input.disabled = false;
+      sendButton.disabled = false;
+      input.focus();
+      messages.scrollTop = messages.scrollHeight;
+    }
+  });
+
+  portalApi(
+    `/api/agent/${encodeURIComponent(getConnectionId())}/report-status?inspectionId=${encodeURIComponent(inspection.id || '')}`
+  ).then(body => {
+    status.className = `ai-report-status ${body.available ? 'ai-report-ready' : 'ai-report-waiting'}`;
+    status.replaceChildren(
+      el('span', { class: 'ai-status-dot', 'aria-hidden': 'true' }),
+      el('span', {
+        text: body.available
+          ? 'Full inspection report connected'
+          : 'Inspection report backup is not available yet'
+      })
+    );
+    input.disabled = !body.available;
+    sendButton.disabled = !body.available;
+    if (body.available) input.focus();
+  }).catch(error => {
+    status.className = 'ai-report-status ai-report-waiting';
+    status.replaceChildren(
+      el('span', { class: 'ai-status-dot', 'aria-hidden': 'true' }),
+      el('span', { text: error.message })
+    );
+  });
+}
+
 function renderDashboard(data) {
   currentData = data;
   const { company, stats, tier, inspections } = data;
@@ -287,19 +491,36 @@ function renderDashboard(data) {
   const timeline = el('div', { class: 'timeline' });
   for (const inspection of inspections) {
     const date = monthDay(inspection.date);
+    const inspectionBody = el('div', { class: 'inspection-card-body' }, [
+      el('p', { class: 'inspection-title', text: inspection.location || inspection.address }),
+      el('p', {
+        class: 'inspection-meta',
+        text: `${inspection.services} | ${inspection.inspector} | ${inspection.status}`
+      })
+    ]);
+
+    if (inspection.published && inspection.id) {
+      inspectionBody.append(
+        el('div', { class: 'inspection-actions' }, [
+          el('button', {
+            class: 'inspection-ai-button',
+            type: 'button',
+            onclick: () => openInspectologyAi(inspection)
+          }, [
+            el('span', { class: 'inspection-ai-icon', text: '✦', 'aria-hidden': 'true' }),
+            el('span', { text: 'Ask Inspectology AI' })
+          ])
+        ])
+      );
+    }
+
     timeline.append(
       el('article', { class: 'timeline-item' }, [
         el('div', { class: 'date' }, [
           document.createTextNode(date.month),
           el('span', { text: date.day })
         ]),
-        el('div', {}, [
-          el('p', { class: 'inspection-title', text: inspection.location || inspection.address }),
-          el('p', {
-            class: 'inspection-meta',
-            text: `${inspection.services} | ${inspection.inspector} | ${inspection.status}`
-          })
-        ])
+        inspectionBody
       ])
     );
   }
