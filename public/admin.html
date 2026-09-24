@@ -50,6 +50,28 @@
 
         <div class="admin-divider"></div>
 
+        <section class="report-test-panel" aria-labelledby="driveBackupHeading">
+          <div>
+            <h2 id="driveBackupHeading">Google Drive Backup Test</h2>
+            <p>Verify that Vercel can find the Spectora backup folder and full inspection PDF through the read-only service account.</p>
+          </div>
+          <form id="driveBackupForm" class="report-test-form">
+            <label class="form-field">
+              <span>Property address</span>
+              <input id="driveBackupAddress" value="948 Glenangus Dr, Bel Air, MD 21015" required>
+            </label>
+            <label class="form-field">
+              <span>Inspection date</span>
+              <input id="driveBackupDate" type="date" value="2026-09-22" required>
+            </label>
+            <button class="primary-button" type="submit">Test Drive Backup</button>
+          </form>
+          <p id="driveBackupMessage" class="admin-message" aria-live="polite"></p>
+          <div id="driveBackupResults" class="report-test-results"></div>
+        </section>
+
+        <div class="admin-divider"></div>
+
         <section class="report-test-panel" aria-labelledby="reportLinkTestHeading">
           <div>
             <h2 id="reportLinkTestHeading">Published Report Link Test</h2>
