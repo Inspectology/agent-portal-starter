@@ -109,6 +109,12 @@ function createConfig(env = process.env) {
     companyId: mode === 'live' ? validatedPositiveDecimalId(env.SPECTORA_COMPANY_ID, 'SPECTORA_COMPANY_ID') : '',
     signingSecret: env.PORTAL_SIGNING_SECRET || '',
     adminAccessKey: String(env.ADMIN_ACCESS_KEY || '').trim(),
+    ai: {
+      apiKey: String(env.OPENAI_API_KEY || '').trim(),
+      model: String(env.OPENAI_MODEL || 'gpt-5.6-luna').trim(),
+      rateLimitMax: boundedInteger(env.AI_RATE_LIMIT_MAX, 10, 1, 100),
+      rateLimitWindowMs: boundedInteger(env.AI_RATE_LIMIT_WINDOW_MS, 60_000, 1000, 3_600_000)
+    },
     googleDrive: {
       projectNumber: String(env.GOOGLE_CLOUD_PROJECT_NUMBER || '').trim(),
       poolId: String(env.GOOGLE_WORKLOAD_IDENTITY_POOL_ID || '').trim(),
@@ -451,6 +457,165 @@ function dateToBackupLabels(value) {
   ];
 }
 
+async function findGoogleDriveBackup(config, runtimeOidcToken, address, date) {
+  const token = await googleDriveAccessToken(config, runtimeOidcToken);
+  const rootFiles = await googleDriveListChildren(token, config.googleDrive.backupFolderId);
+  const street = String(address || '').split(',')[0].trim();
+  const normalizedStreet = normalizeDriveMatchText(street);
+  const dateLabels = dateToBackupLabels(date);
+
+  const folders = rootFiles.filter(file =>
+    file.mimeType === 'application/vnd.google-apps.folder'
+  );
+
+  const folder = folders.find(file => {
+    const name = String(file.name || '');
+    return normalizeDriveMatchText(name).includes(normalizedStreet) &&
+      dateLabels.some(label => name.includes(label));
+  }) || null;
+
+  if (!folder) return { token, folder: null, files: [], pdfs: [], fullReport: null, summaryReport: null };
+
+  const files = await googleDriveListChildren(token, folder.id);
+  const pdfs = files.filter(file => file.mimeType === 'application/pdf');
+  const fullReport = pdfs.find(file =>
+    /inspectology home inspection report/i.test(file.name || '') &&
+    !/-summary\.pdf$/i.test(file.name || '')
+  ) || null;
+  const summaryReport = pdfs.find(file => /-summary\.pdf$/i.test(file.name || '')) || null;
+
+  return { token, folder, files, pdfs, fullReport, summaryReport };
+}
+
+function googleDriveDownloadFile(accessToken, fileId, maxBytes = 30_000_000) {
+  const id = encodeURIComponent(String(fileId || ''));
+  const url = new URL(`https://www.googleapis.com/drive/v3/files/${id}?alt=media&supportsAllDrives=true`);
+
+  return new Promise((resolve, reject) => {
+    const request = https.get(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      timeout: 30_000
+    }, response => {
+      if (response.statusCode < 200 || response.statusCode > 299) {
+        const statusCode = Number(response.statusCode || 0);
+        response.resume();
+        reject(new Error(`Google Drive file download returned HTTP ${statusCode}`));
+        return;
+      }
+
+      const chunks = [];
+      let bytes = 0;
+      response.on('data', chunk => {
+        bytes += chunk.length;
+        if (bytes > maxBytes) {
+          reject(new Error('Inspection report PDF exceeded the AI file size limit'));
+          response.destroy();
+          return;
+        }
+        chunks.push(chunk);
+      });
+      response.on('end', () => resolve(Buffer.concat(chunks)));
+      response.on('error', reject);
+    });
+    request.on('timeout', () => request.destroy(new Error('Google Drive file download timed out')));
+    request.on('error', reject);
+  });
+}
+
+function openAiOutputText(payload) {
+  const parts = [];
+  for (const item of payload?.output || []) {
+    if (item?.type !== 'message') continue;
+    for (const content of item.content || []) {
+      if (content?.type === 'output_text' && content.text) parts.push(content.text);
+    }
+  }
+  return parts.join('\n').trim();
+}
+
+async function askOpenAiAboutReport(config, pdfBuffer, filename, question, history, inspection) {
+  if (!config.ai.apiKey) throw authError('Inspectology AI is not configured yet', 503);
+
+  const recentHistory = (Array.isArray(history) ? history : [])
+    .slice(-6)
+    .map(item => ({
+      role: item?.role === 'assistant' ? 'assistant' : 'user',
+      text: String(item?.text || '').slice(0, 2000)
+    }))
+    .filter(item => item.text);
+
+  const context = recentHistory.length
+    ? recentHistory.map(item => `${item.role === 'assistant' ? 'Previous answer' : 'Previous question'}: ${item.text}`).join('\n\n')
+    : 'No previous conversation context.';
+
+  const instructions = [
+    'You are Inspectology AI, a report-grounded assistant for a real estate agent.',
+    'Use only the attached Inspectology inspection report as the factual source for property-specific answers.',
+    'If the report does not state something, say that it is not stated in the report. Never guess.',
+    'Do not advise whether a buyer should purchase, cancel, renegotiate, or make a legal or contractual decision.',
+    'Do not invent repair prices, urgency, code violations, diagnoses, or contractor conclusions.',
+    'Clearly distinguish the inspector\'s written observation/recommendation from your own plain-language explanation.',
+    'Whenever possible, cite the exact report section number and heading, such as "12.2.1 Attic - Structure & Sheathing".',
+    'Keep answers useful to an agent, concise, and easy to relay to a client.',
+    'Remind the user to review the complete inspection report when a summary could omit relevant context.'
+  ].join(' ');
+
+  const requestBody = JSON.stringify({
+    model: config.ai.model,
+    store: false,
+    max_output_tokens: 1100,
+    instructions,
+    input: [{
+      role: 'user',
+      content: [
+        {
+          type: 'input_file',
+          filename: String(filename || 'inspection-report.pdf').slice(0, 180),
+          file_data: pdfBuffer.toString('base64')
+        },
+        {
+          type: 'input_text',
+          text: [
+            `Inspection: ${inspection.location || 'Property'}`,
+            `Inspection date: ${inspection.date || ''}`,
+            context,
+            `Current question: ${question}`
+          ].join('\n\n')
+        }
+      ]
+    }]
+  });
+
+  const response = await requestJson(
+    'https://api.openai.com/v1/responses',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.ai.apiKey}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(requestBody)
+      },
+      timeout: 45_000
+    },
+    requestBody,
+    2_000_000
+  );
+
+  if (response.statusCode < 200 || response.statusCode > 299 || !response.json) {
+    const message = response.json?.error?.message || `OpenAI returned HTTP ${response.statusCode}`;
+    throw new Error(message);
+  }
+
+  const answer = openAiOutputText(response.json);
+  if (!answer) throw new Error('Inspectology AI returned an empty answer');
+
+  return {
+    answer,
+    model: response.json.model || config.ai.model,
+    usage: response.json.usage || null
+  };
+}
+
 function assertCompanyScope(records, companyId) {
   for (const record of records) {
     const attributeId = record?.attributes?.company_id;
@@ -530,6 +695,7 @@ function mapInspection(insp) {
     : [street, locality].filter(Boolean).join(', ') || 'Location unavailable';
 
   return {
+    id: String(insp.id || ''),
     date,
     location,
     services: [attrs.service_names, attrs.service_add_on_names].filter(Boolean).join(' + '),
@@ -1039,6 +1205,24 @@ function createPortal(options = {}) {
   const upstreamGet = options.upstreamGet || createHttpsUpstream(config);
   const log = options.log || (entry => process.stdout.write(`${JSON.stringify(entry)}\n`));
   const allowRequest = createRateLimiter(config, nowMs);
+  const allowAiRequest = createRateLimiter({
+    ...config,
+    rateLimitMax: config.ai.rateLimitMax,
+    rateLimitWindowMs: config.ai.rateLimitWindowMs
+  }, nowMs);
+
+  function authorizeAgentRequest(req, connectionId, options = {}) {
+    if (config.mode !== 'live') return { grant: 'demo' };
+
+    validatedPositiveDecimalId(connectionId, 'Spectora connection ID');
+    const grant = bearerToken(req);
+    verifyGrant(grant, connectionId, config.signingSecret, { now: nowSeconds() });
+
+    const key = crypto.createHash('sha256').update(`${grant}:${connectionId}`).digest('hex');
+    const allowed = options.ai ? allowAiRequest(key) : allowRequest(key);
+    if (!allowed) throw authError(options.ai ? 'AI request rate limit exceeded' : 'Rate limit exceeded', 429);
+    return { grant };
+  }
 
   async function fetchUpstream(stage, endpoint) {
     try {
@@ -1436,23 +1620,118 @@ function createPortal(options = {}) {
         }
         sendJson(res, 405, { error: 'Admin operation not allowed' }); status = 405; return;
       }
-      if (req.method === 'GET' && pathname.startsWith('/api/agent/')) {
-        const connectionId = pathname.slice('/api/agent/'.length).split('/')[0];
+      if (pathname.startsWith('/api/agent/')) {
+        const parts = pathname.slice('/api/agent/'.length).split('/').filter(Boolean);
+        const connectionId = parts[0] || '';
+        const operation = parts[1] || '';
         if (!connectionId) { sendJson(res, 400, { error: 'Missing connection ID' }); status = 400; return; }
-        if (config.mode === 'live') {
-          let grant;
-          try {
-            validatedPositiveDecimalId(connectionId, 'Spectora connection ID');
-            grant = bearerToken(req);
-            verifyGrant(grant, connectionId, config.signingSecret, { now: nowSeconds() });
-          }
-          catch (error) { status = error.statusCode || 401; sendJson(res, status, { error: error.message }); return; }
-          const key = crypto.createHash('sha256').update(`${grant}:${connectionId}`).digest('hex');
-          if (!allowRequest(key)) { sendJson(res, 429, { error: 'Rate limit exceeded' }); status = 429; return; }
+
+        try {
+          authorizeAgentRequest(req, connectionId, { ai: operation === 'ask-report' });
+        } catch (error) {
+          status = error.statusCode || 401;
+          sendJson(res, status, { error: error.message });
+          return;
         }
-        const payload = await getAgentPayload(connectionId);
-        if (!payload) { sendJson(res, 404, { error: 'Agent not found' }); status = 404; return; }
-        sendJson(res, 200, payload); status = 200; return;
+
+        if (req.method === 'GET' && operation === '') {
+          const payload = await getAgentPayload(connectionId);
+          if (!payload) { sendJson(res, 404, { error: 'Agent not found' }); status = 404; return; }
+          sendJson(res, 200, payload); status = 200; return;
+        }
+
+        if (req.method === 'GET' && operation === 'report-status') {
+          const inspectionId = String(url.searchParams.get('inspectionId') || '').trim();
+          const payload = await getAgentPayload(connectionId);
+          if (!payload) { sendJson(res, 404, { error: 'Agent not found' }); status = 404; return; }
+
+          const inspection = (payload.inspections || []).find(item => String(item.id || '') === inspectionId);
+          if (!inspection || !inspection.published) {
+            sendJson(res, 404, { error: 'Published inspection not found for this agent' }); status = 404; return;
+          }
+
+          if (config.mode === 'demo') {
+            sendJson(res, 200, { available: true, demo: true, inspection }); status = 200; return;
+          }
+
+          const backup = await findGoogleDriveBackup(
+            config,
+            String(req.headers['x-vercel-oidc-token'] || ''),
+            inspection.location,
+            inspection.date
+          );
+
+          sendJson(res, 200, {
+            available: Boolean(backup.fullReport),
+            folderFound: Boolean(backup.folder),
+            reportName: backup.fullReport?.name || '',
+            inspection
+          });
+          status = 200;
+          return;
+        }
+
+        if (req.method === 'POST' && operation === 'ask-report') {
+          const body = await readJsonBody(req, 24_000);
+          const inspectionId = String(body.inspectionId || '').trim();
+          const question = String(body.question || '').trim();
+          const history = Array.isArray(body.history) ? body.history : [];
+
+          if (!question || question.length > 1200) {
+            sendJson(res, 400, { error: 'Question must be between 1 and 1200 characters' }); status = 400; return;
+          }
+
+          const payload = await getAgentPayload(connectionId);
+          if (!payload) { sendJson(res, 404, { error: 'Agent not found' }); status = 404; return; }
+          const inspection = (payload.inspections || []).find(item => String(item.id || '') === inspectionId);
+          if (!inspection || !inspection.published) {
+            sendJson(res, 404, { error: 'Published inspection not found for this agent' }); status = 404; return;
+          }
+
+          if (config.mode === 'demo') {
+            sendJson(res, 200, {
+              answer: 'Demo mode confirms the Ask Inspectology AI interface is working. Live answers will be grounded only in the selected inspection report and will cite report sections when available.',
+              demo: true
+            });
+            status = 200;
+            return;
+          }
+
+          const backup = await findGoogleDriveBackup(
+            config,
+            String(req.headers['x-vercel-oidc-token'] || ''),
+            inspection.location,
+            inspection.date
+          );
+
+          if (!backup.folder) {
+            sendJson(res, 404, { error: 'Spectora backup folder is not available for this inspection yet' }); status = 404; return;
+          }
+          if (!backup.fullReport) {
+            sendJson(res, 404, { error: 'Full inspection report PDF is not available to Inspectology AI yet' }); status = 404; return;
+          }
+
+          const pdf = await googleDriveDownloadFile(backup.token, backup.fullReport.id);
+          const result = await askOpenAiAboutReport(
+            config,
+            pdf,
+            backup.fullReport.name,
+            question,
+            history,
+            inspection
+          );
+
+          sendJson(res, 200, {
+            answer: result.answer,
+            model: result.model,
+            usage: result.usage,
+            reportName: backup.fullReport.name
+          });
+          status = 200;
+          return;
+        }
+
+        sendJson(res, 405, { error: 'Agent operation not allowed' }); status = 405; return;
       }
       if (req.method === 'GET') { sendStatic(res, pathname); status = res.statusCode || res.status || 200; return; }
       sendJson(res, 405, { error: 'Method not allowed' }); status = 405;
