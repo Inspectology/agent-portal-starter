@@ -68,6 +68,24 @@
 
         <div class="admin-divider"></div>
 
+        <section class="report-test-panel" aria-labelledby="reportApiTestHeading">
+          <div>
+            <h2 id="reportApiTestHeading">Public Report API Test</h2>
+            <p>Call the Spectora public report endpoint directly using the report UUID from the published report link.</p>
+          </div>
+          <form id="reportApiTestForm" class="report-link-form">
+            <label class="form-field">
+              <span>Spectora published report URL</span>
+              <input id="reportApiTestUrl" type="url" value="https://reports.spectora.com/v/reports/f1434136-3ff4-49b2-ba8d-f3aa128fb8cc?ignoreClientComplete=true" required>
+            </label>
+            <button class="primary-button" type="submit">Test Public Report API</button>
+          </form>
+          <p id="reportApiTestMessage" class="admin-message" aria-live="polite"></p>
+          <div id="reportApiTestResults" class="report-test-results"></div>
+        </section>
+
+        <div class="admin-divider"></div>
+
         <section class="report-test-panel" aria-labelledby="networkTestHeading">
           <div>
             <h2 id="networkTestHeading">Report Viewer Endpoint Scan</h2>
