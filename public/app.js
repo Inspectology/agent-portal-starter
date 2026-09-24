@@ -61,6 +61,38 @@ function fmtDate(value) {
   return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(date);
 }
 
+function fmtAppointmentTime(value) {
+  const date = parseDate(value);
+  if (!date) return '';
+  return new Intl.DateTimeFormat('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
+  }).format(date);
+}
+
+function inspectionDateTime(inspection) {
+  return parseDate(inspection?.datetime || inspection?.date);
+}
+
+function isPastInspection(inspection) {
+  if (inspection?.canceled) return false;
+  const date = inspectionDateTime(inspection);
+  return !date || date.getTime() <= Date.now();
+}
+
+function findNextInspection(inspections) {
+  return (inspections || [])
+    .filter(inspection => {
+      if (inspection?.canceled) return false;
+      const date = inspectionDateTime(inspection);
+      return date && date.getTime() > Date.now();
+    })
+    .sort((a, b) => inspectionDateTime(a).getTime() - inspectionDateTime(b).getTime())[0] || null;
+}
+
 function monthDay(value) {
   const date = parseDate(value);
   if (!date) return { month: '', day: '' };
@@ -641,6 +673,41 @@ function renderInspectionCard(inspection) {
   ]);
 }
 
+function renderNextInspection(inspection) {
+  if (!inspection) return null;
+
+  const children = [
+    el('div', { class: 'next-inspection-date' }, [
+      el('span', { text: 'Next inspection' }),
+      el('strong', { text: fmtAppointmentTime(inspection.datetime || inspection.date) })
+    ]),
+    el('div', { class: 'next-inspection-main' }, [
+      el('strong', { class: 'next-inspection-address', text: inspection.location || inspection.address || 'Property address unavailable' }),
+      el('span', { class: 'next-inspection-services', text: inspection.services || 'Inspection' }),
+      inspection.inspector
+        ? el('span', { class: 'next-inspection-inspector', text: `Inspector: ${inspection.inspector}` })
+        : document.createTextNode('')
+    ])
+  ];
+
+  if (inspection.spectoraUrl || currentData?.meta?.mode === 'design-preview') {
+    children.push(
+      el('button', {
+        class: 'next-inspection-button',
+        type: 'button',
+        onclick: () => openSpectoraInspection(inspection)
+      }, [
+        el('span', { text: 'Open in Spectora' }),
+        el('span', { text: '↗', 'aria-hidden': 'true' })
+      ])
+    );
+  }
+
+  return el('section', { class: 'section dashboard-section next-inspection-section' }, [
+    ...children
+  ]);
+}
+
 function renderInspectionHistory(inspections) {
   const timeline = el('div', { class: 'timeline' });
   const status = el('p', { class: 'inspection-search-status', 'aria-live': 'polite' });
@@ -654,7 +721,8 @@ function renderInspectionHistory(inspections) {
       : 'No inspections found.');
   };
 
-  showInspections((inspections || []).slice(0, 5));
+  const pastInspections = (inspections || []).filter(isPastInspection);
+  showInspections(pastInspections.slice(0, 5));
 
   const searchInput = el('input', {
     class: 'inspection-search-input',
@@ -672,7 +740,7 @@ function renderInspectionHistory(inspections) {
     onclick: () => {
       searchInput.value = '';
       clearButton.hidden = true;
-      showInspections((inspections || []).slice(0, 5));
+      showInspections(pastInspections.slice(0, 5));
       searchInput.focus();
     }
   });
@@ -698,7 +766,7 @@ function renderInspectionHistory(inspections) {
       let matches;
       if (currentData?.meta?.mode === 'design-preview') {
         const normalized = query.toLowerCase();
-        matches = (inspections || []).filter(item =>
+        matches = pastInspections.filter(item =>
           [item.location, item.address, item.city, item.state, item.date, item.inspector, item.services]
             .filter(Boolean)
             .some(value => String(value).toLowerCase().includes(normalized))
@@ -707,7 +775,7 @@ function renderInspectionHistory(inspections) {
         const body = await portalApi(
           `/api/agent/${encodeURIComponent(getConnectionId())}/inspections-search?q=${encodeURIComponent(query)}`
         );
-        matches = body.inspections || [];
+        matches = (body.inspections || []).filter(isPastInspection);
       }
 
       showInspections(matches, matches.length
@@ -795,6 +863,10 @@ function renderDashboard(data) {
       ])
     ])
   );
+
+  const nextInspection = findNextInspection(inspections);
+  const nextInspectionCard = renderNextInspection(nextInspection);
+  if (nextInspectionCard) app.append(nextInspectionCard);
 
   const additionalServices = [
     { name: 'Radon Testing', note: 'Know the level before closing.' },
