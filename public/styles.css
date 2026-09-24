@@ -2125,3 +2125,19 @@ input:focus-visible,
     font-size: 8px;
   }
 }
+
+.hero-profile-actions {
+  display: grid;
+  justify-items: center;
+  gap: 7px;
+}
+
+.hero-profile-actions .hero-info-button {
+  min-width: 150px;
+  margin: 0;
+}
+
+.hero-profile-actions .profile-photo-reminder-button {
+  min-width: 150px;
+}
+
