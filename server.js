@@ -431,10 +431,24 @@ async function googleDriveListChildren(accessToken, parentId) {
   return response.json.files;
 }
 
-function dateToBackupLabel(value) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) return '';
+function normalizeDriveMatchText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function dateToBackupLabels(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) return [];
   const [year, month, day] = String(value).split('-');
-  return `${month}/${day}/${year}`;
+  const m = String(Number(month));
+  const d = String(Number(day));
+  return [
+    `${month}/${day}/${year}`,
+    `${m}/${d}/${year}`,
+    `${year}-${month}-${day}`
+  ];
 }
 
 function assertCompanyScope(records, companyId) {
@@ -1166,17 +1180,32 @@ function createPortal(options = {}) {
             String(req.headers['x-vercel-oidc-token'] || '')
           );
           const rootFiles = await googleDriveListChildren(token, config.googleDrive.backupFolderId);
-          const street = address.split(',')[0].trim().toLowerCase();
-          const dateLabel = dateToBackupLabel(date);
+          const street = address.split(',')[0].trim();
+          const normalizedStreet = normalizeDriveMatchText(street);
+          const dateLabels = dateToBackupLabels(date);
 
-          const matchingFolders = rootFiles.filter(file =>
-            file.mimeType === 'application/vnd.google-apps.folder' &&
-            String(file.name || '').toLowerCase().includes(street) &&
-            String(file.name || '').includes(dateLabel)
+          const folders = rootFiles.filter(file =>
+            file.mimeType === 'application/vnd.google-apps.folder'
           );
 
+          const matchingFolders = folders.filter(file => {
+            const name = String(file.name || '');
+            const normalizedName = normalizeDriveMatchText(name);
+            const streetMatches = normalizedName.includes(normalizedStreet);
+            const dateMatches = dateLabels.some(label => name.includes(label));
+            return streetMatches && dateMatches;
+          });
+
           if (!matchingFolders.length) {
-            sendJson(res, 404, { error: 'No matching Spectora backup folder found' }); status = 404; return;
+            sendJson(res, 404, {
+              error: 'No matching Spectora backup folder found',
+              expectedStreet: street,
+              expectedDateFormats: dateLabels,
+              folderCount: folders.length,
+              sampleFolders: folders.slice(0, 20).map(file => file.name)
+            });
+            status = 404;
+            return;
           }
 
           const folder = matchingFolders[0];
