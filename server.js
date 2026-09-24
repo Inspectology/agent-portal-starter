@@ -646,7 +646,7 @@ async function askOpenAiAboutReport(config, pdfBuffer, filename, question, histo
         {
           type: 'input_file',
           filename: String(filename || 'inspection-report.pdf').slice(0, 180),
-          file_data: pdfBuffer.toString('base64')
+          file_data: `data:application/pdf;base64,${pdfBuffer.toString('base64')}`
         },
         {
           type: 'input_text',
