@@ -612,82 +612,97 @@ function scanHermesUsage(source) {
 
 function scanBundleEndpointCandidates(source) {
   const text = String(source || '');
-  const candidates = new Set();
-  const interestingStrings = new Set();
-  const contexts = [];
-  const contextSeen = new Set();
+  const endpointCandidates = new Set();
+  const likelyApiPaths = new Set();
+  const callContexts = [];
+  const seenContext = new Set();
 
-  const absolute = /https:\/\/[^"'\s)]+/gi;
-  for (const match of text.matchAll(absolute)) {
-    const value = match[0].replace(/[\\,;]+$/, '');
-    if (/(spectora|api|graphql|report|inspection|viewer|changeset)/i.test(value)) candidates.add(value.slice(0, 260));
-    if (candidates.size >= 120) break;
-  }
-
-  const quoted = /["'`]([^"'\`]{1,260})["'`]/g;
-  for (const match of text.matchAll(quoted)) {
-    const value = match[1];
-    if (
-      /(spectora|changeset|report|inspection|section|comment|finding|defect|summary|graphql|apiHost)/i.test(value)
-    ) {
-      if (
-        value.startsWith('/') ||
-        value.startsWith('http') ||
-        /^[A-Za-z0-9_.:-]{2,120}$/.test(value)
-      ) {
-        interestingStrings.add(value.slice(0, 260));
-      }
+  const addContext = (label, index, radius = 700) => {
+    const start = Math.max(0, index - radius);
+    const end = Math.min(text.length, index + radius);
+    const snippet = text.slice(start, end).replace(/\s+/g, ' ').slice(0, 1800);
+    const key = snippet.slice(0, 220);
+    if (!seenContext.has(key)) {
+      seenContext.add(key);
+      callContexts.push({ label, snippet });
     }
-    if (interestingStrings.size >= 160) break;
+  };
+
+  for (const match of text.matchAll(/https:\/\/[^"'\s)]+/gi)) {
+    const value = match[0].replace(/[\\,;]+$/, '');
+    if (
+      /changeset-api\.hermes\.prod\.spectora\.com/i.test(value) ||
+      /reports?\.spectora\.com/i.test(value) ||
+      /api[^/]*\.spectora\.com/i.test(value)
+    ) {
+      endpointCandidates.add(value.slice(0, 300));
+      addContext('spectora-host', match.index || 0);
+    }
   }
 
-  const needles = [
-    'changeset-api.hermes.prod.spectora.com',
-    'apiHost',
-    'graphql',
-    'changeset',
-    'report',
-    'inspection',
-    'summary',
-    'finding',
-    'defect'
+  const pathPatterns = [
+    /["'`]((?:\/)?api\/v[0-9]+\/[^"'\`]{1,220})["'`]/gi,
+    /["'`]((?:\/)?v[0-9]+\/(?:reports?|inspections?|changesets?|sections?|comments?|findings?|summaries?)[^"'\`]{0,220})["'`]/gi,
+    /["'`]((?:\/)?(?:reports?|inspections?|changesets?|sections?|comments?|findings?|summaries?)[^"'\`]{0,220})["'`]/gi
   ];
 
-  for (const needle of needles) {
+  for (const regex of pathPatterns) {
+    for (const match of text.matchAll(regex)) {
+      const value = match[1];
+      if (value && value.length < 280) {
+        likelyApiPaths.add(value);
+        addContext('api-path', match.index || 0, 520);
+      }
+      if (likelyApiPaths.size >= 160) break;
+    }
+  }
+
+  const callRegexes = [
+    /fetch\s*\(/gi,
+    /axios\s*\./gi,
+    /\.get\s*\(/gi,
+    /\.post\s*\(/gi,
+    /\.request\s*\(/gi
+  ];
+
+  for (const regex of callRegexes) {
+    let hits = 0;
+    for (const match of text.matchAll(regex)) {
+      const index = match.index || 0;
+      const nearby = text.slice(Math.max(0, index - 500), Math.min(text.length, index + 1200));
+      if (/(VITE_HERMES_API_URL|changeset-api|api\/v[0-9]+|report|inspection|changeset)/i.test(nearby)) {
+        addContext('network-call', index, 900);
+        hits += 1;
+      }
+      if (hits >= 18) break;
+    }
+  }
+
+  const configNeedles = [
+    'VITE_HERMES_API_URL',
+    'changeset-api.hermes.prod.spectora.com',
+    'sample_reports',
+    'client_report',
+    'inspection.attributes.slug',
+    '/api/v2/'
+  ];
+
+  for (const needle of configNeedles) {
     let from = 0;
     let hits = 0;
-    while (hits < 4) {
-      const index = text.toLowerCase().indexOf(needle.toLowerCase(), from);
+    while (hits < 8) {
+      const index = text.indexOf(needle, from);
       if (index === -1) break;
-      const start = Math.max(0, index - 420);
-      const end = Math.min(text.length, index + needle.length + 700);
-      const snippet = text.slice(start, end).replace(/\s+/g, ' ').slice(0, 1200);
-      const key = snippet.slice(0, 180);
-      if (!contextSeen.has(key)) {
-        contextSeen.add(key);
-        contexts.push({ needle, snippet });
-      }
+      addContext(needle, index, 850);
       from = index + needle.length;
       hits += 1;
     }
   }
 
-  const sortedCandidates = [...candidates].sort((a, b) => {
-    const score = value => {
-      let total = 0;
-      if (/spectora/i.test(value)) total += 6;
-      if (/changeset/i.test(value)) total += 5;
-      if (/report|inspection/i.test(value)) total += 4;
-      if (/graphql|api/i.test(value)) total += 2;
-      return total;
-    };
-    return score(b) - score(a);
-  });
-
   return {
-    candidates: sortedCandidates.slice(0, 100),
-    interestingStrings: [...interestingStrings].slice(0, 140),
-    contexts: contexts.slice(0, 28)
+    candidates: [...endpointCandidates].slice(0, 80),
+    likelyApiPaths: [...likelyApiPaths].slice(0, 160),
+    contexts: callContexts.slice(0, 50)
   };
 }
 
@@ -997,7 +1012,7 @@ function createPortal(options = {}) {
           const scriptSources = extractScriptSources(page.body, page.finalUrl);
           const scannedScripts = [];
           const endpointCandidates = new Set();
-          const interestingStrings = new Set();
+          const likelyApiPaths = new Set();
           const bundleContexts = [];
           const hermesContexts = [];
 
@@ -1019,7 +1034,7 @@ function createPortal(options = {}) {
               const asset = await fetchSpectoraPublicAsset(scriptUrl);
               const scan = scanBundleEndpointCandidates(asset.body);
               for (const candidate of scan.candidates) endpointCandidates.add(candidate);
-              for (const value of scan.interestingStrings) interestingStrings.add(value);
+              for (const value of scan.likelyApiPaths || []) likelyApiPaths.add(value);
               for (const item of scan.contexts) bundleContexts.push(item);
               for (const item of scanHermesUsage(asset.body)) hermesContexts.push(item);
               scannedScripts.push({
@@ -1029,7 +1044,7 @@ function createPortal(options = {}) {
                 contentType: asset.contentType,
                 bytes: Buffer.byteLength(asset.body, 'utf8'),
                 candidateCount: scan.candidates.length,
-                interestingStringCount: scan.interestingStrings.length,
+                likelyApiPathCount: (scan.likelyApiPaths || []).length,
                 contextCount: scan.contexts.length
               });
             } catch (error) {
@@ -1046,8 +1061,8 @@ function createPortal(options = {}) {
             scriptSources,
             scannedScripts,
             endpointCandidates: [...endpointCandidates].slice(0, 100),
-            interestingStrings: [...interestingStrings].slice(0, 140),
-            bundleContexts: bundleContexts.slice(0, 28),
+            likelyApiPaths: [...likelyApiPaths].slice(0, 160),
+            bundleContexts: bundleContexts.slice(0, 50),
             hermesContexts: hermesContexts.slice(0, 40)
           });
           status = 200;
