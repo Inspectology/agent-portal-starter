@@ -575,6 +575,41 @@ function extractScriptSources(html, baseUrl) {
   return urls;
 }
 
+function scanHermesUsage(source) {
+  const text = String(source || '');
+  const results = [];
+  const seen = new Set();
+  const needles = [
+    'VITE_HERMES_API_URL',
+    'changeset-api.hermes.prod.spectora.com',
+    '/api/v2/',
+    'sample_reports',
+    'client_report',
+    'user_report'
+  ];
+
+  for (const needle of needles) {
+    let from = 0;
+    let hits = 0;
+    while (hits < 12) {
+      const index = text.indexOf(needle, from);
+      if (index === -1) break;
+      const start = Math.max(0, index - 1200);
+      const end = Math.min(text.length, index + needle.length + 1800);
+      const snippet = text.slice(start, end).replace(/\s+/g, ' ').slice(0, 3000);
+      const key = snippet.slice(0, 220);
+      if (!seen.has(key)) {
+        seen.add(key);
+        results.push({ needle, snippet });
+      }
+      from = index + needle.length;
+      hits += 1;
+    }
+  }
+
+  return results.slice(0, 40);
+}
+
 function scanBundleEndpointCandidates(source) {
   const text = String(source || '');
   const candidates = new Set();
@@ -964,6 +999,7 @@ function createPortal(options = {}) {
           const endpointCandidates = new Set();
           const interestingStrings = new Set();
           const bundleContexts = [];
+          const hermesContexts = [];
 
           for (const scriptUrl of scriptSources.slice(0, 6)) {
             let parsed;
@@ -985,6 +1021,7 @@ function createPortal(options = {}) {
               for (const candidate of scan.candidates) endpointCandidates.add(candidate);
               for (const value of scan.interestingStrings) interestingStrings.add(value);
               for (const item of scan.contexts) bundleContexts.push(item);
+              for (const item of scanHermesUsage(asset.body)) hermesContexts.push(item);
               scannedScripts.push({
                 url: scriptUrl,
                 scanned: true,
@@ -1010,7 +1047,8 @@ function createPortal(options = {}) {
             scannedScripts,
             endpointCandidates: [...endpointCandidates].slice(0, 100),
             interestingStrings: [...interestingStrings].slice(0, 140),
-            bundleContexts: bundleContexts.slice(0, 28)
+            bundleContexts: bundleContexts.slice(0, 28),
+            hermesContexts: hermesContexts.slice(0, 40)
           });
           status = 200;
           return;
