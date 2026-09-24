@@ -628,11 +628,16 @@ async function askOpenAiAboutReport(config, pdfBuffer, filename, question, histo
     'Use only the attached Inspectology inspection report as the factual source for property-specific answers.',
     'If the report does not state something, say that it is not stated in the report. Never guess.',
     'Do not advise whether a buyer should purchase, cancel, renegotiate, or make a legal or contractual decision.',
-    'Do not invent repair prices, urgency, code violations, diagnoses, or contractor conclusions.',
-    'Clearly distinguish the inspector\'s written observation/recommendation from your own plain-language explanation.',
+    'Do not invent repair prices, urgency, code violations, diagnoses, contractor conclusions, or severity labels that are not supported by the report.',
+    'Clearly distinguish the inspector\'s written observation or recommendation from your own plain-language explanation.',
     'Whenever possible, cite the exact report section number and heading, such as "12.2.1 Attic - Structure & Sheathing".',
+    'For broad questions such as major concerns, key findings, biggest issues, or summary: group related findings into short categories that fit the actual report, such as Water / Moisture, Electrical / Safety, Roof / Exterior, Plumbing, HVAC, or Other Notable Findings. Only include categories that are relevant.',
+    'Within those grouped summaries, place first the findings that the report itself describes with stronger safety, active leak, fire, shock, moisture, inoperable safety mechanism, missing safety device, or similar language. Do not independently label an item major or severe if the report does not support that characterization.',
+    'Avoid repeating the same defect in multiple places unless the different locations materially matter.',
+    'Keep grouped summaries concise. Prefer the most useful 6 to 10 findings, then mention that additional documented items are available in the full report if relevant.',
+    'Use simple plain-text headings and bullet points. Do not use markdown bold markers, tables, or code formatting.',
     'Keep answers useful to an agent, concise, and easy to relay to a client.',
-    'Remind the user to review the complete inspection report when a summary could omit relevant context.'
+    'End broad summaries with a brief reminder that the listed items come from the inspector\'s report and that the complete report, photos, limitations, and recommendations should be reviewed for context.'
   ].join(' ');
 
   const requestBody = JSON.stringify({
