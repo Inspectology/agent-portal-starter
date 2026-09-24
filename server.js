@@ -778,6 +778,117 @@ function mapInspection(insp) {
   };
 }
 
+function validEmail(value) {
+  const email = String(value || '').trim();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : '';
+}
+
+function collectStringFields(value, prefix = '', depth = 0, output = []) {
+  if (depth > 4 || value == null) return output;
+
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    output.push({ path: prefix, value: String(value) });
+    return output;
+  }
+
+  if (Array.isArray(value)) {
+    value.slice(0, 20).forEach((item, index) =>
+      collectStringFields(item, `${prefix}[${index}]`, depth + 1, output)
+    );
+    return output;
+  }
+
+  if (typeof value === 'object') {
+    Object.entries(value).slice(0, 80).forEach(([key, child]) => {
+      const path = prefix ? `${prefix}.${key}` : key;
+      collectStringFields(child, path, depth + 1, output);
+    });
+  }
+
+  return output;
+}
+
+function resourceDisplayName(resource, fallback = '') {
+  const attrs = resource?.attributes || {};
+  const direct = [
+    attrs.inspector_name,
+    attrs.full_name,
+    attrs.name,
+    [attrs.first_name, attrs.last_name].filter(Boolean).join(' ')
+  ].find(value => typeof value === 'string' && value.trim());
+
+  return String(direct || fallback || '').trim();
+}
+
+function inspectorContactsFromDetail(detail) {
+  const inspection = detail?.data || {};
+  const fallbackName = String(inspection.attributes?.inspector_name || '').trim();
+  const contacts = [];
+  const seenEmails = new Set();
+
+  const addFromFields = (fields, name, requireInspectorPath = false) => {
+    for (const field of fields) {
+      if (!/email/i.test(field.path)) continue;
+      if (requireInspectorPath && !/inspector/i.test(field.path)) continue;
+      const email = validEmail(field.value);
+      if (!email || seenEmails.has(email.toLowerCase())) continue;
+      seenEmails.add(email.toLowerCase());
+      contacts.push({ name: name || fallbackName, email });
+    }
+  };
+
+  addFromFields(
+    collectStringFields(inspection.attributes || {}),
+    fallbackName,
+    true
+  );
+
+  const assignmentRefs = Array.isArray(inspection.relationships?.assignments?.data)
+    ? inspection.relationships.assignments.data
+    : [];
+  const assignmentKeys = new Set(
+    assignmentRefs.map(ref => `${String(ref?.type || '')}:${String(ref?.id || '')}`)
+  );
+  const included = Array.isArray(detail?.included) ? detail.included : [];
+  const byKey = new Map(included.map(resource => [
+    `${String(resource?.type || '')}:${String(resource?.id || '')}`,
+    resource
+  ]));
+
+  const assignments = included.filter(resource =>
+    resource?.type === 'assignment' &&
+    assignmentKeys.has(`assignment:${String(resource.id || '')}`)
+  );
+
+  for (const assignment of assignments) {
+    const assignmentName = resourceDisplayName(assignment, fallbackName);
+    addFromFields(
+      collectStringFields(assignment.attributes || {}),
+      assignmentName,
+      false
+    );
+
+    for (const relationship of Object.values(assignment.relationships || {})) {
+      const data = relationship?.data;
+      const refs = Array.isArray(data) ? data : (data ? [data] : []);
+
+      for (const ref of refs) {
+        const type = String(ref?.type || '');
+        if (!/(inspector|user|profile|employee|staff)/i.test(type)) continue;
+        const related = byKey.get(`${type}:${String(ref?.id || '')}`);
+        if (!related) continue;
+        addFromFields(
+          collectStringFields(related.attributes || {}),
+          resourceDisplayName(related, assignmentName),
+          false
+        );
+      }
+    }
+  }
+
+  return contacts.slice(0, 8);
+}
+
 function readUpstreamJson(response, maxBytes) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -1768,6 +1879,42 @@ function createPortal(options = {}) {
 
           sendJson(res, 200, {
             inspections: inspections.data.map(mapInspection)
+          });
+          status = 200;
+          return;
+        }
+
+        if (req.method === 'GET' && operation === 'inspector-contact') {
+          const inspectionId = String(url.searchParams.get('inspectionId') || '').trim();
+          if (!inspectionId) {
+            sendJson(res, 400, { error: 'Inspection ID is required' }); status = 400; return;
+          }
+
+          if (config.mode === 'demo') {
+            sendJson(res, 404, { error: 'Inspector contact is unavailable in demo mode' }); status = 404; return;
+          }
+
+          const detail = await fetchUpstream(
+            'Inspection inspector lookup',
+            `/v2/inspections/${encodeURIComponent(inspectionId)}?include=assignments,buying_agent,selling_agent,company`
+          );
+
+          assertRecordId(detail.data, inspectionId, 'inspection');
+          assertInspectionScope([detail.data], config.companyId, connectionId);
+
+          const contacts = inspectorContactsFromDetail(detail);
+          if (!contacts.length) {
+            sendJson(res, 404, {
+              error: 'Inspector email is not available from Spectora for this inspection',
+              inspectorName: String(detail.data?.attributes?.inspector_name || '')
+            });
+            status = 404;
+            return;
+          }
+
+          sendJson(res, 200, {
+            contacts,
+            inspectorName: String(detail.data?.attributes?.inspector_name || '')
           });
           status = 200;
           return;
