@@ -834,7 +834,11 @@ function resourceDisplayName(resource, fallback = '') {
 
 const INSPECTOR_EMAIL_DIRECTORY = Object.freeze({
   'tiffany mercer': { name: 'Tiffany Mercer', email: 'tmercer@inspect-ology.com' },
-  'joe heyne': { name: 'Joe Heyne', email: 'jheyne@inspect-ology.com' }
+  'joe heyne': { name: 'Joe Heyne', email: 'jheyne@inspect-ology.com' },
+  'gregg rhodes': { name: 'Gregg Rhodes', email: 'grhodes@inspect-ology.com' },
+  'mark kahan': { name: 'Mark Kahan', email: 'mkahan@inspect-ology.com' },
+  'nick dinsmore': { name: 'Nick Dinsmore', email: 'ndinsmore@inspect-ology.com' },
+  'jordan bird': { name: 'Jordan Bird', email: 'jordanbird@inspect-ology.com' }
 });
 
 function fallbackInspectorContacts(detail) {
