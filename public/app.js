@@ -184,16 +184,45 @@ function renderProfileSection(agent) {
     saveMessage
   ]);
 
-  form.addEventListener('submit', event => {
+  form.addEventListener('submit', async event => {
     event.preventDefault();
     const values = Object.fromEntries(new FormData(form).entries());
+    saveMessage.textContent = 'Saving profile…';
+
+    let notificationSent = false;
+    let notificationPending = false;
+
+    try {
+      if (currentData?.meta?.mode === 'design-preview') {
+        notificationSent = true;
+      } else {
+        const body = await portalApi(
+          `/api/agent/${encodeURIComponent(getConnectionId())}/profile-change`,
+          {
+            method: 'POST',
+            body: JSON.stringify({ profile: values })
+          }
+        );
+        notificationSent = Boolean(body.notificationSent);
+        notificationPending = body.notificationStatus === 'not_configured';
+      }
+    } catch {
+      notificationPending = true;
+    }
+
     localStorage.setItem(profileKey(), JSON.stringify(values));
-    saveMessage.textContent = 'Profile saved on this device.';
     currentData = { ...currentData, agent: { ...currentData.agent, ...values } };
-    setTimeout(() => renderDashboard(currentData), 550);
+
+    saveMessage.textContent = notificationSent
+      ? 'Profile saved. Inspectology was notified of your changes.'
+      : (notificationPending
+          ? 'Profile saved. Inspectology notification is pending setup.'
+          : 'Profile saved.');
+
+    setTimeout(() => renderDashboard(currentData), 900);
   });
 
-  return el('section', { class: 'section', id: 'profile' }, [
+  return el('section', { class: 'section dashboard-section', id: 'profile' }, [
     el('div', { class: 'section-heading' }, [
       el('h2', { text: 'My Profile' }),
       el('span', { class: 'section-kicker', text: 'Editable' })
@@ -409,147 +438,69 @@ function openInspectologyAi(inspection) {
   }
 }
 
-function renderDashboard(data) {
-  currentData = data;
-  const { company, stats, tier, inspections } = data;
-  const agent = mergedAgent(data.agent);
-  applyBrand();
-  document.title = `${agent.firstName} ${agent.lastName} | Inspectology Agent Dashboard`;
-  app.replaceChildren();
+function openSpectoraInspection(inspection) {
+  if (currentData?.meta?.mode === 'design-preview') {
+    alert('Design preview: in the live dashboard this opens the inspection in Spectora.');
+    return;
+  }
+  if (!inspection.spectoraUrl) return;
+  window.open(inspection.spectoraUrl, '_blank', 'noopener');
+}
 
-  app.append(
-    el('div', { id: 'top' }),
-    el('header', { class: 'topbar' }, [
-      el('div', { class: 'brand-lockup' }, [
-        el('img', {
-          class: 'brand-logo',
-          src: 'https://static.wixstatic.com/media/4b52f0_0a206cfa3f764d989adbe9a349b1d320~mv2.png',
-          alt: 'Inspectology'
-        })
-      ]),
-      el('div', { class: 'badge', text: 'Agent Dashboard' })
-    ])
-  );
+function renderInspectionCard(inspection) {
+  const date = monthDay(inspection.date);
+  const inspectionBody = el('div', { class: 'inspection-card-body' }, [
+    el('p', { class: 'inspection-title', text: inspection.location || inspection.address }),
+    el('p', {
+      class: 'inspection-meta',
+      text: [inspection.services, inspection.inspector, inspection.status].filter(Boolean).join(' | ')
+    })
+  ]);
 
-  const avatar = el('img', {
-    class: 'avatar',
-    src: agent.photoUrl || '/assets/mock-agent.svg',
-    alt: `${agent.firstName} ${agent.lastName}`
-  });
+  if (inspection.published && inspection.id) {
+    const actions = el('div', { class: 'inspection-actions' });
 
-  app.append(
-    el('section', { class: 'hero' }, [
-      avatar,
-      el('h1', { class: 'agent-name', text: `${agent.firstName} ${agent.lastName}` }),
-      el('p', { class: 'agency', text: agent.agency || 'Real estate partner' }),
-      el('p', { class: 'agent-location', text: [agent.city, agent.state].filter(Boolean).join(', ') }),
-      el('div', { class: 'tier' }, [
-        el('span', { class: 'tier-dot', 'aria-hidden': 'true' }),
-        document.createTextNode(tier.label || 'Partner')
-      ])
-    ])
-  );
-
-  app.append(
-    el('section', { class: 'section' }, [
-      el('h2', { text: 'Schedule Next Inspection' }),
-      el('div', { class: 'actions' }, [
-        el('a', { class: 'action', href: company.bookingUrl, target: '_blank', rel: 'noopener' }, [
-          el('strong', { text: 'Online' }),
-          el('span', { text: 'Open the inspection scheduler' })
-        ]),
-        el('a', { class: 'action', href: `tel:${company.phone.replace(/[^\d+]/g, '')}` }, [
-          el('strong', { text: 'Call' }),
-          el('span', { text: company.phone })
-        ]),
-        el('a', { class: 'action', href: company.whatsappUrl, target: '_blank', rel: 'noopener' }, [
-          el('strong', { text: 'Message' }),
-          el('span', { text: 'Start a quick conversation' })
-        ]),
-        el('a', { class: 'action', href: company.website, target: '_blank', rel: 'noopener' }, [
-          el('strong', { text: 'Website' }),
-          el('span', { text: 'View services and resources' })
-        ])
-      ])
-    ])
-  );
-
-  app.append(
-    el('section', { class: 'section' }, [
-      el('h2', { text: 'Relationship Snapshot' }),
-      el('div', { class: 'metrics' }, [
-        el('div', { class: 'metric' }, [el('strong', { text: stats.totalInspections }), el('span', { text: 'Total' })]),
-        el('div', { class: 'metric' }, [el('strong', { text: stats.buyingInspections }), el('span', { text: 'Buying' })]),
-        el('div', { class: 'metric' }, [el('strong', { text: stats.sellingInspections }), el('span', { text: 'Selling' })])
-      ])
-    ])
-  );
-
-  app.append(
-    el('section', { class: 'section' }, [
-      el('h2', { text: 'Partnership' }),
-      el('div', { class: 'partnership' }, [
-        el('div', { class: 'partnership-row' }, [
-          el('span', { text: fmtDate(stats.firstInspection) || 'Start' }),
-          el('span', { text: fmtDate(stats.lastInspection) || 'Present' })
-        ]),
-        el('div', { class: 'bar', 'aria-hidden': 'true' }, [el('span')]),
-        el('p', {
-          class: 'privacy-note',
-          text: portalModeCopy.modeNotice(data.meta?.mode)
-        })
-      ])
-    ])
-  );
-
-  app.append(renderProfileSection(agent));
-
-  const timeline = el('div', { class: 'timeline' });
-  for (const inspection of inspections) {
-    const date = monthDay(inspection.date);
-    const inspectionBody = el('div', { class: 'inspection-card-body' }, [
-      el('p', { class: 'inspection-title', text: inspection.location || inspection.address }),
-      el('p', {
-        class: 'inspection-meta',
-        text: `${inspection.services} | ${inspection.inspector} | ${inspection.status}`
-      })
-    ]);
-
-    if (inspection.published && inspection.id) {
-      inspectionBody.append(
-        el('div', { class: 'inspection-actions' }, [
-          el('button', {
-            class: 'inspection-ai-button',
-            type: 'button',
-            onclick: () => openInspectologyAi(inspection)
-          }, [
-            el('span', { class: 'inspection-ai-icon', text: '✦', 'aria-hidden': 'true' }),
-            el('span', { text: 'Ask Inspectology AI' })
-          ])
+    if (inspection.spectoraUrl || currentData?.meta?.mode === 'design-preview') {
+      actions.append(
+        el('button', {
+          class: 'inspection-open-button',
+          type: 'button',
+          onclick: () => openSpectoraInspection(inspection)
+        }, [
+          el('span', { text: 'Open in Spectora' }),
+          el('span', { class: 'inspection-action-arrow', text: '↗', 'aria-hidden': 'true' })
         ])
       );
     }
 
-    timeline.append(
-      el('article', { class: 'timeline-item' }, [
-        el('div', { class: 'date' }, [
-          document.createTextNode(date.month),
-          el('span', { text: date.day })
-        ]),
-        inspectionBody
+    actions.append(
+      el('button', {
+        class: 'inspection-ai-button',
+        type: 'button',
+        onclick: () => openInspectologyAi(inspection)
+      }, [
+        el('span', { class: 'inspection-ai-icon', text: '✦', 'aria-hidden': 'true' }),
+        el('span', { text: 'Ask Inspectology AI' })
       ])
     );
+
+    inspectionBody.append(actions);
   }
 
-  app.append(
-    el('section', { class: 'section', id: 'history' }, [
-      el('h2', { text: 'Inspection History' }),
-      timeline
-    ])
-  );
+  return el('article', { class: 'timeline-item' }, [
+    el('div', { class: 'date' }, [
+      document.createTextNode(date.month),
+      el('span', { text: date.day })
+    ]),
+    inspectionBody
+  ]);
+}
+
+function renderInspectionHistory(inspections) {
+  app.append(renderInspectionHistory(inspections));
 
   app.append(
-    el('section', { class: 'section app-install-card' }, [
+    el('section', { class: 'section dashboard-section app-install-card' }, [
       el('h2', { text: 'Agent Dashboard' }),
       el('p', { class: 'install-copy', text: 'Add the Inspectology Agent Dashboard to your phone for one-tap access.' }),
       el('button', { class: 'secondary-button', type: 'button', text: 'Install Dashboard', onclick: installApp })
