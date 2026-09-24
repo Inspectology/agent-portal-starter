@@ -497,6 +497,192 @@ function renderInspectionCard(inspection) {
 }
 
 function renderInspectionHistory(inspections) {
+  const timeline = el('div', { class: 'timeline' });
+  const status = el('p', { class: 'inspection-search-status', 'aria-live': 'polite' });
+
+  const showInspections = (items, label = '') => {
+    timeline.replaceChildren();
+    const rows = Array.isArray(items) ? items : [];
+    for (const inspection of rows) timeline.append(renderInspectionCard(inspection));
+    status.textContent = label || (rows.length
+      ? 'Showing your 5 most recent inspections.'
+      : 'No inspections found.');
+  };
+
+  showInspections((inspections || []).slice(0, 5));
+
+  const searchInput = el('input', {
+    class: 'inspection-search-input',
+    type: 'search',
+    placeholder: 'Search past inspections by address',
+    autocomplete: 'off',
+    minlength: '2'
+  });
+
+  const clearButton = el('button', {
+    class: 'inspection-search-clear',
+    type: 'button',
+    text: 'Clear',
+    hidden: true,
+    onclick: () => {
+      searchInput.value = '';
+      clearButton.hidden = true;
+      showInspections((inspections || []).slice(0, 5));
+      searchInput.focus();
+    }
+  });
+
+  const form = el('form', { class: 'inspection-search-form' }, [
+    searchInput,
+    el('button', { class: 'inspection-search-button', type: 'submit', text: 'Search' }),
+    clearButton
+  ]);
+
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const query = searchInput.value.trim();
+    if (query.length < 2) {
+      status.textContent = 'Enter at least 2 characters to search.';
+      return;
+    }
+
+    clearButton.hidden = false;
+    status.textContent = 'Searching inspection history…';
+
+    try {
+      let matches;
+      if (currentData?.meta?.mode === 'design-preview') {
+        const normalized = query.toLowerCase();
+        matches = (inspections || []).filter(item =>
+          [item.location, item.address, item.city, item.state, item.date, item.inspector, item.services]
+            .filter(Boolean)
+            .some(value => String(value).toLowerCase().includes(normalized))
+        );
+      } else {
+        const body = await portalApi(
+          `/api/agent/${encodeURIComponent(getConnectionId())}/inspections-search?q=${encodeURIComponent(query)}`
+        );
+        matches = body.inspections || [];
+      }
+
+      showInspections(matches, matches.length
+        ? `${matches.length} inspection${matches.length === 1 ? '' : 's'} found.`
+        : 'No matching inspections found.');
+    } catch (error) {
+      timeline.replaceChildren();
+      status.textContent = error.message;
+    }
+  });
+
+  return el('section', { class: 'section dashboard-section', id: 'history' }, [
+    el('div', { class: 'section-heading history-heading' }, [
+      el('div', {}, [
+        el('h2', { text: 'Inspection History' }),
+        el('p', { class: 'section-description', text: 'Your five newest inspections are shown below. Search by address for older inspections.' })
+      ])
+    ]),
+    form,
+    status,
+    timeline
+  ]);
+}
+
+function renderDashboard(data) {
+  currentData = data;
+  const { company, stats, tier, inspections } = data;
+  const agent = mergedAgent(data.agent);
+  applyBrand();
+  document.title = `${agent.firstName} ${agent.lastName} | Inspectology Agent Dashboard`;
+  app.replaceChildren();
+
+  app.append(
+    el('div', { id: 'top' }),
+    el('header', { class: 'topbar' }, [
+      el('div', { class: 'brand-lockup' }, [
+        el('img', {
+          class: 'brand-logo',
+          src: 'https://static.wixstatic.com/media/4b52f0_0a206cfa3f764d989adbe9a349b1d320~mv2.png',
+          alt: 'Inspectology'
+        })
+      ]),
+      el('div', { class: 'badge', text: 'Agent Dashboard' })
+    ])
+  );
+
+  const avatar = el('img', {
+    class: 'avatar',
+    src: agent.photoUrl || '/assets/mock-agent.svg',
+    alt: `${agent.firstName} ${agent.lastName}`
+  });
+
+  app.append(
+    el('section', { class: 'hero' }, [
+      avatar,
+      el('h1', { class: 'agent-name', text: `${agent.firstName} ${agent.lastName}` }),
+      el('p', { class: 'agency', text: agent.agency || 'Real estate partner' }),
+      el('p', { class: 'agent-location', text: [agent.city, agent.state].filter(Boolean).join(', ') }),
+      el('div', { class: 'tier' }, [
+        el('span', { class: 'tier-dot', 'aria-hidden': 'true' }),
+        document.createTextNode(tier.label || 'Partner')
+      ])
+    ])
+  );
+
+  app.append(
+    el('section', { class: 'section dashboard-section schedule-section' }, [
+      el('div', { class: 'section-heading' }, [
+        el('div', {}, [
+          el('h2', { text: 'Schedule Next Inspection' }),
+          el('p', { class: 'section-description', text: 'Choose the fastest way to get your next inspection on the calendar.' })
+        ])
+      ]),
+      el('div', { class: 'schedule-actions' }, [
+        el('a', { class: 'schedule-button schedule-button-primary', href: company.bookingUrl, target: '_blank', rel: 'noopener' }, [
+          el('span', { class: 'schedule-button-icon', text: '＋', 'aria-hidden': 'true' }),
+          el('span', { text: 'Book Online' })
+        ]),
+        el('a', { class: 'schedule-button', href: `tel:${company.phone.replace(/[^\d+]/g, '')}` }, [
+          el('span', { class: 'schedule-button-icon', text: '☎', 'aria-hidden': 'true' }),
+          el('span', { text: 'Call' })
+        ]),
+        el('a', { class: 'schedule-button', href: company.whatsappUrl, target: '_blank', rel: 'noopener' }, [
+          el('span', { class: 'schedule-button-icon', text: '✉', 'aria-hidden': 'true' }),
+          el('span', { text: 'Message' })
+        ])
+      ])
+    ])
+  );
+
+  app.append(
+    el('section', { class: 'section dashboard-section' }, [
+      el('h2', { text: 'Relationship Snapshot' }),
+      el('div', { class: 'metrics' }, [
+        el('div', { class: 'metric' }, [el('strong', { text: stats.totalInspections }), el('span', { text: 'Total' })]),
+        el('div', { class: 'metric' }, [el('strong', { text: stats.buyingInspections }), el('span', { text: 'Buying' })]),
+        el('div', { class: 'metric' }, [el('strong', { text: stats.sellingInspections }), el('span', { text: 'Selling' })])
+      ])
+    ])
+  );
+
+  app.append(
+    el('section', { class: 'section dashboard-section' }, [
+      el('h2', { text: 'Partnership' }),
+      el('div', { class: 'partnership' }, [
+        el('div', { class: 'partnership-row' }, [
+          el('span', { text: fmtDate(stats.firstInspection) || 'Start' }),
+          el('span', { text: fmtDate(stats.lastInspection) || 'Present' })
+        ]),
+        el('div', { class: 'bar', 'aria-hidden': 'true' }, [el('span')]),
+        el('p', {
+          class: 'privacy-note',
+          text: portalModeCopy.modeNotice(data.meta?.mode)
+        })
+      ])
+    ])
+  );
+
+  app.append(renderProfileSection(agent));
+
   app.append(renderInspectionHistory(inspections));
 
   app.append(
