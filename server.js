@@ -1751,6 +1751,41 @@ function createPortal(options = {}) {
           sendJson(res, 200, payload); status = 200; return;
         }
 
+        if (req.method === 'GET' && operation === 'inspections-search') {
+          const search = String(url.searchParams.get('q') || '').trim();
+          if (search.length < 2 || search.length > 120) {
+            sendJson(res, 400, { error: 'Search must be between 2 and 120 characters' }); status = 400; return;
+          }
+
+          if (config.mode === 'demo') {
+            const sample = applyCustomization(readSampleAgent(), config.branding, config.demoAgent, config.demoTier);
+            const normalized = search.toLowerCase();
+            const matches = (sample.inspections || []).filter(item =>
+              [item.address, item.location, item.city, item.state, item.date, item.inspector, item.services]
+                .filter(Boolean)
+                .some(value => String(value).toLowerCase().includes(normalized))
+            );
+            sendJson(res, 200, { inspections: matches.slice(0, 50) }); status = 200; return;
+          }
+
+          const inspections = await fetchUpstream('Inspection search', query('/v2/inspections', {
+            'filter[connection_id]': connectionId,
+            'filter[address]': search,
+            include: 'buying_agent,selling_agent,company',
+            sort: '-datetime',
+            'page[size]': '50'
+          }));
+
+          if (!Array.isArray(inspections.data)) throw authError('Upstream inspection search data missing', 502);
+          assertInspectionScope(inspections.data, config.companyId, connectionId);
+
+          sendJson(res, 200, {
+            inspections: inspections.data.map(mapInspection)
+          });
+          status = 200;
+          return;
+        }
+
         if (req.method === 'GET' && operation === 'report-status') {
           const inspectionId = String(url.searchParams.get('inspectionId') || '').trim();
           const payload = await getAgentPayload(connectionId);
