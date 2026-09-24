@@ -40,6 +40,16 @@
           <button id="signOut" class="secondary-button" type="button">Sign Out</button>
         </div>
 
+        <section class="launch-readiness" aria-labelledby="launchReadinessHeading">
+          <div>
+            <h2 id="launchReadinessHeading">Launch Readiness</h2>
+            <p>Private configuration check. No secret values are displayed.</p>
+          </div>
+          <div id="launchReadinessResults" class="launch-readiness-grid"></div>
+        </section>
+
+        <div class="admin-divider"></div>
+
         <form id="searchForm" class="admin-search">
           <input id="agentSearch" type="search" placeholder="Search agent name or email" autocomplete="off" required minlength="2">
           <button class="primary-button" type="submit">Search</button>
@@ -70,85 +80,6 @@
           <div id="driveBackupResults" class="report-test-results"></div>
         </section>
 
-        <div class="admin-divider"></div>
-
-        <section class="report-test-panel" aria-labelledby="reportLinkTestHeading">
-          <div>
-            <h2 id="reportLinkTestHeading">Published Report Link Test</h2>
-            <p>Test whether the Inspectology server can read a published Spectora web report without a logged-in browser session.</p>
-          </div>
-          <form id="reportLinkTestForm" class="report-link-form">
-            <label class="form-field">
-              <span>Spectora published report URL</span>
-              <input id="reportLinkUrl" type="url" value="https://reports.spectora.com/v/reports/f1434136-3ff4-49b2-ba8d-f3aa128fb8cc?ignoreClientComplete=true" required>
-            </label>
-            <button class="primary-button" type="submit">Test Published Report</button>
-          </form>
-          <p id="reportLinkTestMessage" class="admin-message" aria-live="polite"></p>
-          <div id="reportLinkTestResults" class="report-test-results"></div>
-        </section>
-
-        <div class="admin-divider"></div>
-
-        <section class="report-test-panel" aria-labelledby="reportApiTestHeading">
-          <div>
-            <h2 id="reportApiTestHeading">Public Report API Test</h2>
-            <p>Call the Spectora public report endpoint directly using the report UUID from the published report link.</p>
-          </div>
-          <form id="reportApiTestForm" class="report-link-form">
-            <label class="form-field">
-              <span>Spectora published report URL</span>
-              <input id="reportApiTestUrl" type="url" value="https://reports.spectora.com/v/reports/f1434136-3ff4-49b2-ba8d-f3aa128fb8cc?ignoreClientComplete=true" required>
-            </label>
-            <button class="primary-button" type="submit">Test Public Report API</button>
-          </form>
-          <p id="reportApiTestMessage" class="admin-message" aria-live="polite"></p>
-          <div id="reportApiTestResults" class="report-test-results"></div>
-        </section>
-
-        <div class="admin-divider"></div>
-
-        <section class="report-test-panel" aria-labelledby="networkTestHeading">
-          <div>
-            <h2 id="networkTestHeading">Report Viewer Endpoint Scan</h2>
-            <p>Scan the public Spectora Report Viewer scripts for likely API paths used to load report content.</p>
-          </div>
-          <form id="networkTestForm" class="report-link-form">
-            <label class="form-field">
-              <span>Spectora published report URL</span>
-              <input id="networkTestUrl" type="url" value="https://reports.spectora.com/v/reports/f1434136-3ff4-49b2-ba8d-f3aa128fb8cc?ignoreClientComplete=true" required>
-            </label>
-            <button class="primary-button" type="submit">Scan Report Viewer</button>
-          </form>
-          <p id="networkTestMessage" class="admin-message" aria-live="polite"></p>
-          <div id="networkTestResults" class="report-test-results"></div>
-        </section>
-
-        <div class="admin-divider"></div>
-
-        <section class="report-test-panel" aria-labelledby="reportTestHeading">
-          <div>
-            <h2 id="reportTestHeading">Report PDF Test</h2>
-            <p>Check whether a published Spectora inspection exposes a PDF attachment we can use for Inspectology AI.</p>
-          </div>
-          <form id="reportTestForm" class="report-test-form">
-            <label class="form-field">
-              <span>Spectora connection ID</span>
-              <input id="reportConnectionId" value="212832" inputmode="numeric" required>
-            </label>
-            <label class="form-field">
-              <span>Property address</span>
-              <input id="reportAddress" value="948 Glenangus Dr, Bel Air, MD 21015" required>
-            </label>
-            <label class="form-field">
-              <span>Inspection date</span>
-              <input id="reportDate" type="date" value="2026-09-22">
-            </label>
-            <button class="primary-button" type="submit">Check Report PDF</button>
-          </form>
-          <p id="reportTestMessage" class="admin-message" aria-live="polite"></p>
-          <div id="reportTestResults" class="report-test-results"></div>
-        </section>
       </section>
     </main>
     <script src="/admin.js" defer></script>
