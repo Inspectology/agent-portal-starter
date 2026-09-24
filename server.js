@@ -1292,7 +1292,7 @@ function createPortal(options = {}) {
   function sendStatic(res, pathname) {
     const requested = pathname === '/admin' || pathname.startsWith('/admin/')
       ? '/admin.html'
-      : (pathname === '/' || pathname.startsWith('/agent/') ? '/index.html' : pathname);
+      : (pathname === '/' || pathname === '/design-preview' || pathname.startsWith('/agent/') ? '/index.html' : pathname);
     let decoded;
     try { decoded = decodeURIComponent(requested); } catch { sendJson(res, 400, { error: 'Malformed URL' }); return; }
     if (decoded.includes('\0') || decoded.includes('\\') || decoded.split('/').includes('..')) { sendJson(res, 403, { error: 'Forbidden' }); return; }
@@ -1315,6 +1315,14 @@ function createPortal(options = {}) {
       pathname = url.pathname;
       if (req.method === 'GET' && pathname === '/api/health') {
         sendJson(res, 200, { status: 'ok', service: 'spectora-agent-portal', mode: config.mode }); status = 200; return;
+      }
+      if (req.method === 'GET' && pathname === '/api/design-preview') {
+        const targetEnv = String(process.env.VERCEL_TARGET_ENV || process.env.VERCEL_ENV || '').toLowerCase();
+        if (targetEnv === 'production') {
+          sendJson(res, 404, { error: 'Not found' }); status = 404; return;
+        }
+        const sample = applyCustomization(readSampleAgent(), config.branding, config.demoAgent, config.demoTier);
+        sendJson(res, 200, { ...sample, meta: { mode: 'design-preview' } }); status = 200; return;
       }
       if (pathname.startsWith('/api/admin/')) {
         if (!config.adminAccessKey) {
