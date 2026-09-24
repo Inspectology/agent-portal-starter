@@ -112,8 +112,129 @@ function getProfileOverrides() {
   }
 }
 
+function photoKey() {
+  return `agentPhoto:${getConnectionId()}`;
+}
+
+function getSavedPhoto() {
+  try {
+    return localStorage.getItem(photoKey()) || '';
+  } catch {
+    return '';
+  }
+}
+
 function mergedAgent(agent) {
-  return { ...agent, ...getProfileOverrides() };
+  const savedPhoto = getSavedPhoto();
+  return {
+    ...agent,
+    ...getProfileOverrides(),
+    photoUrl: savedPhoto || agent.photoUrl
+  };
+}
+
+function resizeProfilePhoto(file, size = 360) {
+  return new Promise((resolve, reject) => {
+    if (!file || !/^image\//i.test(file.type || '')) {
+      reject(new Error('Please choose an image file.'));
+      return;
+    }
+    if (file.size > 8_000_000) {
+      reject(new Error('Please choose a photo smaller than 8 MB.'));
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('The photo could not be read.'));
+    reader.onload = () => {
+      const image = new Image();
+      image.onerror = () => reject(new Error('The photo could not be opened.'));
+      image.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const context = canvas.getContext('2d');
+        if (!context) {
+          reject(new Error('Photo editing is not supported on this device.'));
+          return;
+        }
+
+        const sourceSize = Math.min(image.naturalWidth, image.naturalHeight);
+        const sx = (image.naturalWidth - sourceSize) / 2;
+        const sy = (image.naturalHeight - sourceSize) / 2;
+        context.drawImage(image, sx, sy, sourceSize, sourceSize, 0, 0, size, size);
+        resolve(canvas.toDataURL('image/jpeg', 0.84));
+      };
+      image.src = String(reader.result || '');
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function renderProfilePhotoControl(agent) {
+  const hasCustomPhoto = Boolean(getSavedPhoto());
+  const input = el('input', {
+    class: 'profile-photo-input',
+    type: 'file',
+    accept: 'image/*',
+    'aria-label': hasCustomPhoto ? 'Change profile photo' : 'Add profile photo'
+  });
+
+  const status = el('span', {
+    class: 'profile-photo-reminder',
+    text: hasCustomPhoto ? 'Change photo' : 'Add profile photo'
+  });
+
+  const triggerPicker = () => input.click();
+
+  input.addEventListener('change', async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+
+    status.textContent = 'Updating photo…';
+
+    try {
+      const photo = await resizeProfilePhoto(file);
+      localStorage.setItem(photoKey(), photo);
+      currentData = {
+        ...currentData,
+        agent: {
+          ...currentData.agent,
+          photoUrl: photo
+        }
+      };
+      renderDashboard(currentData);
+    } catch (error) {
+      status.textContent = error.message;
+      input.value = '';
+    }
+  });
+
+  return el('div', { class: 'profile-photo-control' }, [
+    el('button', {
+      class: 'profile-photo-button',
+      type: 'button',
+      'aria-label': hasCustomPhoto ? 'Change profile photo' : 'Add profile photo',
+      onclick: triggerPicker
+    }, [
+      el('img', {
+        class: 'avatar',
+        src: agent.photoUrl || '/assets/mock-agent.svg',
+        alt: `${agent.firstName} ${agent.lastName}`
+      }),
+      el('span', {
+        class: 'profile-photo-badge',
+        text: hasCustomPhoto ? '✎' : '+',
+        'aria-hidden': 'true'
+      })
+    ]),
+    input,
+    el('button', {
+      class: `profile-photo-reminder-button${hasCustomPhoto ? ' profile-photo-reminder-button-subtle' : ''}`,
+      type: 'button',
+      onclick: triggerPicker
+    }, [status])
+  ]);
 }
 
 function applyBrand() {
@@ -633,15 +754,11 @@ function renderDashboard(data) {
     ])
   );
 
-  const avatar = el('img', {
-    class: 'avatar',
-    src: agent.photoUrl || '/assets/mock-agent.svg',
-    alt: `${agent.firstName} ${agent.lastName}`
-  });
+  const profilePhotoControl = renderProfilePhotoControl(agent);
 
   app.append(
     el('section', { class: 'hero' }, [
-      avatar,
+      profilePhotoControl,
       el('h1', { class: 'agent-name', text: `${agent.firstName} ${agent.lastName}` }),
       el('p', { class: 'agency', text: agent.agency || 'Real estate partner' }),
       el('p', { class: 'agent-location', text: [agent.city, agent.state].filter(Boolean).join(', ') }),
