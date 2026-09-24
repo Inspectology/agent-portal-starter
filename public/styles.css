@@ -1779,3 +1779,67 @@ input:focus-visible,
   }
 }
 
+.profile-photo-control {
+  display: inline-grid;
+  justify-items: center;
+  gap: 7px;
+}
+
+.profile-photo-button {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+}
+
+.profile-photo-badge {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  width: 29px;
+  height: 29px;
+  display: grid;
+  place-items: center;
+  border: 3px solid var(--paper);
+  border-radius: 50%;
+  background: var(--brand);
+  color: #fff;
+  font-size: 20px;
+  font-weight: 900;
+  line-height: 1;
+  box-shadow: 0 4px 10px rgba(23, 23, 23, 0.18);
+}
+
+.profile-photo-input {
+  display: none;
+}
+
+.profile-photo-reminder-button {
+  min-height: 28px;
+  padding: 5px 10px;
+  border: 1px solid rgba(169, 5, 51, 0.22);
+  border-radius: 999px;
+  background: rgba(169, 5, 51, 0.06);
+  color: var(--brand);
+  font: inherit;
+  font-size: 9px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.profile-photo-reminder-button-subtle {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 750;
+}
+
+.profile-photo-reminder-button:hover {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+
