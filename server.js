@@ -765,11 +765,13 @@ function mapInspection(insp) {
   return {
     id: String(insp.id || ''),
     date,
+    datetime: attrs.datetime || '',
     location,
     services: [attrs.service_names, attrs.service_add_on_names].filter(Boolean).join(' + '),
     inspector: attrs.inspector_name || '',
     status: attrs.canceled_at ? 'Canceled' : (attrs.published_at ? 'Report Published' : 'Scheduled'),
     published: Boolean(attrs.published_at),
+    canceled: Boolean(attrs.canceled_at),
     spectoraUrl: attrs.slug
       ? `https://portal.spectora.com/inspection/${encodeURIComponent(String(attrs.slug))}`
       : ''
@@ -1393,7 +1395,24 @@ function createPortal(options = {}) {
           sendJson(res, 404, { error: 'Not found' }); status = 404; return;
         }
         const sample = applyCustomization(readSampleAgent(), config.branding, config.demoAgent, config.demoTier);
-        sendJson(res, 200, { ...sample, meta: { mode: 'design-preview' } }); status = 200; return;
+        const previewUpcoming = {
+          id: 'demo-upcoming-1009',
+          date: '2026-09-28',
+          datetime: '2026-09-28T09:00:00-04:00',
+          address: '123 Main Street, Westminster, MD 21157',
+          location: '123 Main Street, Westminster, MD 21157',
+          services: 'Home Inspection + Radon Testing',
+          inspector: 'Inspectology Team',
+          status: 'Scheduled',
+          published: false,
+          canceled: false,
+          spectoraUrl: 'https://portal.spectora.com/inspection/design-preview'
+        };
+        sendJson(res, 200, {
+          ...sample,
+          inspections: [previewUpcoming, ...(sample.inspections || [])],
+          meta: { mode: 'design-preview' }
+        }); status = 200; return;
       }
       if (pathname.startsWith('/api/admin/')) {
         if (!config.adminAccessKey) {
