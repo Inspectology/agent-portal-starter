@@ -2352,3 +2352,25 @@ input:focus-visible,
   }
 }
 
+.ai-open-spectora {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  margin: 10px 18px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--brand);
+  border-radius: 11px;
+  background: #fff;
+  color: var(--brand);
+  font: inherit;
+  font-size: 10px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.ai-open-spectora:hover {
+  background: rgba(169, 5, 51, 0.06);
+}
+
