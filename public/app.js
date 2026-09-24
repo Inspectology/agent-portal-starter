@@ -927,8 +927,10 @@ function renderDashboard(data) {
 
   app.append(
     el('section', { class: 'hero' }, [
-      profilePhotoControl,
-      renderMyInfoButton(agent),
+      el('div', { class: 'hero-profile-actions' }, [
+        profilePhotoControl,
+        renderMyInfoButton(agent)
+      ]),
       el('h1', { class: 'agent-name', text: `${agent.firstName} ${agent.lastName}` }),
       el('p', { class: 'agency', text: agent.agency || 'Real estate partner' }),
       el('p', { class: 'agent-location', text: [agent.city, agent.state].filter(Boolean).join(', ') })
