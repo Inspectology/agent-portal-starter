@@ -676,14 +676,149 @@ function openSpectoraInspection(inspection) {
   window.open(inspection.spectoraUrl, '_blank', 'noopener');
 }
 
-function officeEmailHref() {
-  const subject = encodeURIComponent('Inspectology Agent Dashboard Message');
-  return `mailto:info@inspect-ology.com?subject=${subject}`;
+function openEmailComposer({ title, contacts, subject, message }) {
+  document.querySelector('.email-overlay')?.remove();
+
+  const normalizedContacts = (contacts || [])
+    .map(contact => ({
+      name: String(contact?.name || '').trim(),
+      email: String(contact?.email || '').trim()
+    }))
+    .filter(contact => contact.email);
+
+  const emails = [...new Set(normalizedContacts.map(contact => contact.email))];
+  const contactText = normalizedContacts
+    .map(contact => contact.name ? `${contact.name} <${contact.email}>` : contact.email)
+    .join(', ');
+
+  const subjectInput = el('input', {
+    class: 'email-compose-input',
+    type: 'text',
+    value: subject || '',
+    maxlength: '240'
+  });
+  const messageInput = el('textarea', {
+    class: 'email-compose-textarea',
+    rows: '7'
+  });
+  messageInput.value = message || '';
+
+  const closePanel = () => {
+    overlay.classList.remove('email-overlay-open');
+    setTimeout(() => overlay.remove(), 160);
+    document.removeEventListener('keydown', onKeyDown);
+  };
+
+  const onKeyDown = event => {
+    if (event.key === 'Escape') closePanel();
+  };
+
+  const currentSubject = () => subjectInput.value.trim();
+  const currentMessage = () => messageInput.value;
+
+  const openGmail = () => {
+    const params = new URLSearchParams({
+      view: 'cm',
+      fs: '1',
+      to: emails.join(','),
+      su: currentSubject(),
+      body: currentMessage()
+    });
+    window.open(`https://mail.google.com/mail/?${params.toString()}`, '_blank', 'noopener');
+  };
+
+  const openDefaultMail = () => {
+    const subjectValue = encodeURIComponent(currentSubject());
+    const bodyValue = encodeURIComponent(currentMessage());
+    location.href = `mailto:${emails.join(',')}?subject=${subjectValue}&body=${bodyValue}`;
+  };
+
+  const panel = el('section', {
+    class: 'email-sheet',
+    role: 'dialog',
+    'aria-modal': 'true',
+    'aria-label': title || 'Email'
+  }, [
+    el('div', { class: 'email-sheet-header' }, [
+      el('div', {}, [
+        el('span', { class: 'email-kicker', text: 'Email' }),
+        el('h2', { text: title || 'New Message' }),
+        el('p', { text: 'Review the message, then choose how you want to open it.' })
+      ]),
+      el('button', {
+        class: 'email-close',
+        type: 'button',
+        text: '×',
+        'aria-label': 'Close email',
+        onclick: closePanel
+      })
+    ]),
+    el('div', { class: 'email-sheet-body' }, [
+      el('label', { class: 'email-compose-field' }, [
+        el('span', { text: 'To' }),
+        el('div', { class: 'email-compose-recipient', text: contactText || emails.join(', ') })
+      ]),
+      el('label', { class: 'email-compose-field' }, [
+        el('span', { text: 'Subject' }),
+        subjectInput
+      ]),
+      el('label', { class: 'email-compose-field' }, [
+        el('span', { text: 'Message' }),
+        messageInput
+      ]),
+      el('div', { class: 'email-compose-actions' }, [
+        el('button', {
+          class: 'email-gmail-button',
+          type: 'button',
+          text: 'Open Gmail',
+          onclick: openGmail
+        }),
+        el('button', {
+          class: 'email-default-button',
+          type: 'button',
+          text: 'Open Email App',
+          onclick: openDefaultMail
+        })
+      ]),
+      el('p', {
+        class: 'email-compose-note',
+        text: 'Nothing is sent automatically. You can review and edit the email before sending.'
+      })
+    ])
+  ]);
+
+  const overlay = el('div', {
+    class: 'email-overlay',
+    onclick: event => {
+      if (event.target === overlay) closePanel();
+    }
+  }, [panel]);
+
+  document.body.append(overlay);
+  document.addEventListener('keydown', onKeyDown);
+  requestAnimationFrame(() => overlay.classList.add('email-overlay-open'));
+}
+
+function emailOffice() {
+  openEmailComposer({
+    title: 'Message Inspectology',
+    contacts: [{ name: 'Inspectology Office', email: 'info@inspect-ology.com' }],
+    subject: 'Inspectology Agent Dashboard Message',
+    message: 'Hello Inspectology,\n\n'
+  });
 }
 
 async function emailInspector(inspection) {
   if (currentData?.meta?.mode === 'design-preview') {
-    alert(`Design preview: this will open a new email to the inspector assigned to ${inspection.location || inspection.address || 'this property'}.`);
+    openEmailComposer({
+      title: 'Email Inspector',
+      contacts: [
+        { name: 'Tiffany Mercer', email: 'tmercer@inspect-ology.com' },
+        { name: 'Joe Heyne', email: 'jheyne@inspect-ology.com' }
+      ],
+      subject: `Question about inspection - ${inspection.location || inspection.address || 'Inspection property'}`,
+      message: `Hello,\n\nI have a question about the inspection at ${inspection.location || inspection.address || 'this property'}.\n\n`
+    });
     return;
   }
 
@@ -695,22 +830,21 @@ async function emailInspector(inspection) {
     const contacts = Array.isArray(body.contacts) ? body.contacts : [];
     if (!contacts.length) throw new Error('Inspector email is not available for this inspection.');
 
-    const emails = [...new Set(contacts.map(contact => contact.email).filter(Boolean))];
-    if (!emails.length) throw new Error('Inspector email is not available for this inspection.');
-
-    const inspectorNames = [...new Set(contacts.map(contact => contact.name).filter(Boolean))];
     const property = inspection.location || inspection.address || 'Inspection property';
-    const subject = encodeURIComponent(`Question about inspection - ${property}`);
-    const greeting = inspectorNames.length === 1 ? `Hi ${inspectorNames[0]},` : 'Hello,';
-    const message = encodeURIComponent(
-      `${greeting}\n\nI have a question about the inspection at ${property}.\n\n`
-    );
 
-    location.href = `mailto:${emails.join(',')}?subject=${subject}&body=${message}`;
+    openEmailComposer({
+      title: contacts.length > 1 ? 'Email Inspectors' : 'Email Inspector',
+      contacts,
+      subject: `Question about inspection - ${property}`,
+      message: `Hello,\n\nI have a question about the inspection at ${property}.\n\n`
+    });
   } catch (error) {
-    alert(
-      `${error.message}\n\nYou can also contact the Inspectology office at info@inspect-ology.com.`
-    );
+    openEmailComposer({
+      title: 'Message Inspectology',
+      contacts: [{ name: 'Inspectology Office', email: 'info@inspect-ology.com' }],
+      subject: `Question about an inspection`,
+      message: `Hello Inspectology,\n\nI tried to contact the inspector about ${inspection.location || inspection.address || 'an inspection'}, but their email was not available.\n\n`
+    });
   }
 }
 
@@ -956,7 +1090,7 @@ function renderDashboard(data) {
           el('span', { class: 'schedule-button-icon', text: '☎', 'aria-hidden': 'true' }),
           el('span', { text: 'Call' })
         ]),
-        el('a', { class: 'schedule-button', href: officeEmailHref() }, [
+        el('button', { class: 'schedule-button', type: 'button', onclick: emailOffice }, [
           el('span', { class: 'schedule-button-icon', text: '✉', 'aria-hidden': 'true' }),
           el('span', { text: 'Message' })
         ])
