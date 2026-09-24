@@ -679,6 +679,44 @@ function renderDashboard(data) {
     ])
   );
 
+  const additionalServices = [
+    { name: 'Radon Testing', note: 'Know the level before closing.' },
+    { name: 'Sewer Scope', note: 'Camera evaluation of the main sewer line.' },
+    { name: 'Termite / WDO', note: 'Wood-destroying organism inspection.' },
+    { name: 'Mold Testing', note: 'Air and surface sampling when needed.' },
+    { name: 'Asbestos Testing', note: 'Material sampling and laboratory analysis.' },
+    { name: 'Environmental Testing', note: 'Targeted testing for property concerns.' }
+  ];
+
+  app.append(
+    el('section', { class: 'section dashboard-section services-section' }, [
+      el('div', { class: 'section-heading services-heading' }, [
+        el('div', {}, [
+          el('h2', { text: 'Additional Services' }),
+          el('p', {
+            class: 'section-description',
+            text: 'Add specialized testing or evaluations to help your client get a more complete picture of the property.'
+          })
+        ])
+      ]),
+      el('div', { class: 'service-grid' },
+        additionalServices.map(service =>
+          el('div', { class: 'service-card' }, [
+            el('strong', { text: service.name }),
+            el('span', { text: service.note })
+          ])
+        )
+      ),
+      el('a', {
+        class: 'services-cta',
+        href: company.bookingUrl,
+        target: '_blank',
+        rel: 'noopener',
+        text: 'Schedule or Add Services'
+      })
+    ])
+  );
+
   const totalInspections = Number(stats.totalInspections || 0);
   const partnershipMilestone = totalInspections >= 100
     ? '100+ inspections together'
