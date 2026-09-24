@@ -1923,3 +1923,33 @@ input:focus-visible,
   }
 }
 
+.inspection-inspector-button {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 7px 11px;
+  border: 1px solid #c9c9cc;
+  border-radius: 999px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 10px;
+  font-weight: 850;
+  cursor: pointer;
+  transition: transform 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+
+.inspection-inspector-button:hover {
+  transform: translateY(-1px);
+  border-color: var(--brand);
+  color: var(--brand);
+}
+
+.inspection-mail-icon {
+  color: var(--brand);
+  font-size: 11px;
+  line-height: 1;
+}
+
