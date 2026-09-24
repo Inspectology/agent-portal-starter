@@ -327,9 +327,9 @@ function requestJson(url, options = {}, body = null, maxBytes = 2_000_000) {
   });
 }
 
-async function googleDriveAccessToken(config) {
+async function googleDriveAccessToken(config, runtimeOidcToken = '') {
   const drive = config.googleDrive || {};
-  const oidcToken = String(process.env.VERCEL_OIDC_TOKEN || '').trim();
+  const oidcToken = String(runtimeOidcToken || process.env.VERCEL_OIDC_TOKEN || '').trim();
 
   const missingDriveConfig = [
     ['GOOGLE_CLOUD_PROJECT_NUMBER', drive.projectNumber],
@@ -1161,7 +1161,10 @@ function createPortal(options = {}) {
             sendJson(res, 400, { error: 'Inspection date must use YYYY-MM-DD format' }); status = 400; return;
           }
 
-          const token = await googleDriveAccessToken(config);
+          const token = await googleDriveAccessToken(
+            config,
+            String(req.headers['x-vercel-oidc-token'] || '')
+          );
           const rootFiles = await googleDriveListChildren(token, config.googleDrive.backupFolderId);
           const street = address.split(',')[0].trim().toLowerCase();
           const dateLabel = dateToBackupLabel(date);
