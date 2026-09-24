@@ -673,7 +673,15 @@ function scanHermesUsage(source) {
     '/api/v2/',
     'sample_reports',
     'client_report',
-    'user_report'
+    'user_report',
+    'Authorization',
+    'Bearer',
+    'id_token',
+    'access_token',
+    'validate_access_token',
+    'report_view_id',
+    'report_views',
+    'AUTH_MISSING'
   ];
 
   for (const needle of needles) {
