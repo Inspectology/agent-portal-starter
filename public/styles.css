@@ -894,3 +894,8 @@ input:focus-visible,
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+.report-test-results .bundle-context-card code {
+  max-height: 340px;
+}
+
