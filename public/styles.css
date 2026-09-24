@@ -1525,3 +1525,64 @@ input:focus-visible,
   }
 }
 
+.top-install-card {
+  margin: -4px 14px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 15px;
+  border: 1px solid rgba(169, 5, 51, 0.2);
+  border-left: 4px solid var(--brand);
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 7px 20px rgba(23, 23, 23, 0.055);
+}
+
+.top-install-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.top-install-copy strong {
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.top-install-copy span {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.top-install-button {
+  flex: 0 0 auto;
+  min-height: 38px;
+  padding: 8px 13px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--brand);
+  color: #fff;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 900;
+  cursor: pointer;
+  box-shadow: 0 5px 14px rgba(169, 5, 51, 0.18);
+}
+
+.top-install-button:hover {
+  background: var(--brand-dark);
+}
+
+.bottom-nav-three {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+@media (max-width: 430px) {
+  .top-install-card {
+    margin-left: 10px;
+    margin-right: 10px;
+  }
+}
+
