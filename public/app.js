@@ -551,6 +551,16 @@ function openInspectologyAi(inspection) {
       })
     ]),
     status,
+    (inspection.spectoraUrl || currentData?.meta?.mode === 'design-preview')
+      ? el('button', {
+          class: 'ai-open-spectora',
+          type: 'button',
+          onclick: () => openSpectoraInspection(inspection)
+        }, [
+          el('span', { text: 'Open in Spectora' }),
+          el('span', { text: '↗', 'aria-hidden': 'true' })
+        ])
+      : document.createTextNode(''),
     el('p', {
       class: 'ai-intro',
       text: 'Ask questions about this inspection. Answers are grounded in the selected Inspectology report and should be read alongside the full report.'
