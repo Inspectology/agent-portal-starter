@@ -827,6 +827,39 @@ function resourceDisplayName(resource, fallback = '') {
   return String(direct || fallback || '').trim();
 }
 
+const INSPECTOR_EMAIL_DIRECTORY = Object.freeze({
+  'tiffany mercer': { name: 'Tiffany Mercer', email: 'tmercer@inspect-ology.com' },
+  'joe heyne': { name: 'Joe Heyne', email: 'jheyne@inspect-ology.com' }
+});
+
+function fallbackInspectorContacts(detail) {
+  const inspectorName = String(detail?.data?.attributes?.inspector_name || '').trim().toLowerCase();
+  if (!inspectorName) return [];
+
+  return Object.entries(INSPECTOR_EMAIL_DIRECTORY)
+    .filter(([name]) => inspectorName.includes(name))
+    .map(([, contact]) => ({ ...contact }));
+}
+
+function mergeInspectorContacts(primary, fallback) {
+  const merged = [];
+  const seen = new Set();
+
+  for (const contact of [...(primary || []), ...(fallback || [])]) {
+    const email = validEmail(contact?.email);
+    if (!email) continue;
+    const key = email.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push({
+      name: String(contact?.name || '').trim(),
+      email
+    });
+  }
+
+  return merged.slice(0, 8);
+}
+
 function inspectorContactsFromDetail(detail) {
   const inspection = detail?.data || {};
   const fallbackName = String(inspection.attributes?.inspector_name || '').trim();
@@ -1909,10 +1942,13 @@ function createPortal(options = {}) {
           assertRecordId(detail.data, inspectionId, 'inspection');
           assertInspectionScope([detail.data], config.companyId, connectionId);
 
-          const contacts = inspectorContactsFromDetail(detail);
+          const contacts = mergeInspectorContacts(
+            inspectorContactsFromDetail(detail),
+            fallbackInspectorContacts(detail)
+          );
           if (!contacts.length) {
             sendJson(res, 404, {
-              error: 'Inspector email is not available from Spectora for this inspection',
+              error: 'Inspector email is not available for this inspection',
               inspectorName: String(detail.data?.attributes?.inspector_name || '')
             });
             status = 404;
