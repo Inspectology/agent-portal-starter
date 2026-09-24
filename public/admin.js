@@ -209,7 +209,7 @@ networkTestForm.addEventListener('submit', async event => {
       el('strong', { text: 'Spectora Report Viewer deep scan' }),
       el('span', { text: `Report HTTP ${body.reportStatus || ''}` }),
       el('span', { text: `Scripts found: ${(body.scriptSources || []).length} | Scripts scanned: ${scripts.filter(item => item.scanned).length}` }),
-      el('span', { text: `Relevant strings: ${strings.length} | Context snippets: ${contexts.length}` })
+      el('span', { text: `Likely API paths: ${paths.length} | Network contexts: ${contexts.length}` })
     ]);
     networkTestResults.append(scriptSummary);
 
@@ -224,9 +224,9 @@ networkTestForm.addEventListener('submit', async event => {
       }
     }
 
-    if (strings.length) {
-      networkTestResults.append(el('h3', { class: 'scan-subheading', text: 'Relevant strings' }));
-      for (const value of strings.slice(0, 60)) {
+    if (paths.length) {
+      networkTestResults.append(el('h3', { class: 'scan-subheading', text: 'Likely API paths' }));
+      for (const value of paths.slice(0, 100)) {
         networkTestResults.append(
           el('div', { class: 'endpoint-candidate endpoint-string' }, [
             el('code', { text: value })
@@ -259,7 +259,7 @@ networkTestForm.addEventListener('submit', async event => {
       }
     }
 
-    if (!candidates.length && !strings.length && !contexts.length && scripts.length) {
+    if (!candidates.length && !paths.length && !contexts.length && scripts.length) {
       for (const script of scripts) {
         networkTestResults.append(
           el('div', { class: 'report-file-card' }, [
