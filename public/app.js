@@ -146,7 +146,31 @@ function field(label, name, value, options = {}) {
   ]);
 }
 
+function isDashboardInstalled() {
+  return window.matchMedia('(display-mode: standalone)').matches ||
+    window.navigator.standalone === true;
+}
+
+function renderInstallPromptCard() {
+  if (isDashboardInstalled()) return null;
+
+  return el('section', { class: 'top-install-card' }, [
+    el('div', { class: 'top-install-copy' }, [
+      el('strong', { text: 'Add Inspectology to your phone' }),
+      el('span', { text: 'Open your Agent Dashboard with one tap.' })
+    ]),
+    el('button', {
+      class: 'top-install-button',
+      type: 'button',
+      text: 'Install App',
+      onclick: installApp
+    })
+  ]);
+}
+
 function installApp() {
+  if (isDashboardInstalled()) return;
+
   if (deferredInstallPrompt) {
     deferredInstallPrompt.prompt();
     deferredInstallPrompt.userChoice.finally(() => {
@@ -628,6 +652,9 @@ function renderDashboard(data) {
     ])
   );
 
+  const installPromptCard = renderInstallPromptCard();
+  if (installPromptCard) app.append(installPromptCard);
+
   app.append(
     el('section', { class: 'section dashboard-section schedule-section' }, [
       el('div', { class: 'section-heading' }, [
@@ -686,22 +713,13 @@ function renderDashboard(data) {
   app.append(renderInspectionHistory(inspections));
 
   app.append(
-    el('section', { class: 'section dashboard-section app-install-card' }, [
-      el('h2', { text: 'Agent Dashboard' }),
-      el('p', { class: 'install-copy', text: 'Add the Inspectology Agent Dashboard to your phone for one-tap access.' }),
-      el('button', { class: 'secondary-button', type: 'button', text: 'Install Dashboard', onclick: installApp })
-    ])
-  );
-
-  app.append(
     el('footer', { class: 'footer' }, [
       document.createTextNode(`${company.license} | ${company.website}`)
     ]),
-    el('nav', { class: 'bottom-nav', 'aria-label': 'Agent app navigation' }, [
+    el('nav', { class: 'bottom-nav bottom-nav-three', 'aria-label': 'Agent app navigation' }, [
       el('a', { href: '#top', text: 'Home' }),
       el('a', { href: '#profile', text: 'Profile' }),
-      el('a', { href: '#history', text: 'History' }),
-      el('button', { type: 'button', text: 'Install', onclick: installApp })
+      el('a', { href: '#history', text: 'History' })
     ])
   );
 }
@@ -751,6 +769,11 @@ window.addEventListener('beforeinstallprompt', event => {
 
 window.addEventListener('appinstalled', () => {
   deferredInstallPrompt = null;
+  if (currentData) renderDashboard(currentData);
+});
+
+window.matchMedia('(display-mode: standalone)').addEventListener?.('change', () => {
+  if (currentData) renderDashboard(currentData);
 });
 
 if ('serviceWorker' in navigator) {
