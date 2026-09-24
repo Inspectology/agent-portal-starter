@@ -196,13 +196,13 @@ networkTestForm.addEventListener('submit', async event => {
     });
 
     const candidates = body.endpointCandidates || [];
-    const strings = body.interestingStrings || [];
+    const paths = body.likelyApiPaths || [];
     const contexts = body.bundleContexts || [];
     const hermesContexts = body.hermesContexts || [];
     const scripts = body.scannedScripts || [];
 
-    networkTestMessage.textContent = candidates.length || strings.length || contexts.length || hermesContexts.length
-      ? `Found ${candidates.length} endpoint candidates and ${hermesContexts.length} Hermes API context snippets.`
+    networkTestMessage.textContent = candidates.length || paths.length || contexts.length || hermesContexts.length
+      ? `Found ${candidates.length} endpoint candidates, ${paths.length} likely API paths, and ${hermesContexts.length} Hermes API context snippets.`
       : `Scanned ${scripts.length} script file${scripts.length === 1 ? '' : 's'}, but no useful report-loading clues were found.`;
 
     const scriptSummary = el('div', { class: 'report-test-summary' }, [
