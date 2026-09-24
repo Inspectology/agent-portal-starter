@@ -127,6 +127,7 @@ function createConfig(env = process.env) {
       serviceAccountEmail: String(env.GOOGLE_DRIVE_SERVICE_ACCOUNT_EMAIL || '').trim(),
       backupFolderId: String(env.GOOGLE_DRIVE_BACKUP_FOLDER_ID || '').trim()
     },
+    deploymentEnvironment: String(env.VERCEL_TARGET_ENV || env.VERCEL_ENV || '').trim().toLowerCase(),
     publicOrigin: validatedOrigin(
       env.PORTAL_PUBLIC_ORIGIN || (env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${env.VERCEL_PROJECT_PRODUCTION_URL}` : ''),
       'PORTAL_PUBLIC_ORIGIN'
@@ -291,12 +292,18 @@ function readJsonBody(req, maxBytes = 16_384) {
 }
 
 function resolvePortalOrigin(req, config) {
-  if (config.publicOrigin) return config.publicOrigin;
   const host = String(req.headers.host || '').trim();
   if (!/^[A-Za-z0-9.-]+(?::[0-9]+)?$/.test(host)) throw authError('Portal public origin is not configured', 500);
+
   const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
   const protocol = forwardedProto === 'http' && /^localhost(?::|$)/.test(host) ? 'http' : 'https';
-  return `${protocol}://${host}`;
+  const requestOrigin = `${protocol}://${host}`;
+
+  if (config.deploymentEnvironment && config.deploymentEnvironment !== 'production') {
+    return requestOrigin;
+  }
+
+  return config.publicOrigin || requestOrigin;
 }
 
 function base64UrlJson(value) {
