@@ -344,16 +344,22 @@ function openInspectologyAi(inspection) {
     messages.scrollTop = messages.scrollHeight;
 
     try {
-      const body = await portalApi(`/api/agent/${encodeURIComponent(getConnectionId())}/ask-report`, {
-        method: 'POST',
-        body: JSON.stringify({
-          inspectionId: inspection.id,
-          question,
-          history: priorHistory
-        })
-      });
+      let answer;
+      if (currentData?.meta?.mode === 'design-preview') {
+        await new Promise(resolve => setTimeout(resolve, 550));
+        answer = 'Design preview: the live version will answer from this inspection’s full Inspectology PDF and cite the exact report section when available. This preview is only showing the dashboard experience.';
+      } else {
+        const body = await portalApi(`/api/agent/${encodeURIComponent(getConnectionId())}/ask-report`, {
+          method: 'POST',
+          body: JSON.stringify({
+            inspectionId: inspection.id,
+            question,
+            history: priorHistory
+          })
+        });
+        answer = body.answer || 'No answer was returned.';
+      }
       thinking.remove();
-      const answer = body.answer || 'No answer was returned.';
       history.push({ role: 'assistant', text: answer });
       messages.append(aiMessage('assistant', answer));
     } catch (error) {
@@ -369,28 +375,38 @@ function openInspectologyAi(inspection) {
     }
   });
 
-  portalApi(
-    `/api/agent/${encodeURIComponent(getConnectionId())}/report-status?inspectionId=${encodeURIComponent(inspection.id || '')}`
-  ).then(body => {
-    status.className = `ai-report-status ${body.available ? 'ai-report-ready' : 'ai-report-waiting'}`;
+  if (currentData?.meta?.mode === 'design-preview') {
+    status.className = 'ai-report-status ai-report-ready';
     status.replaceChildren(
       el('span', { class: 'ai-status-dot', 'aria-hidden': 'true' }),
-      el('span', {
-        text: body.available
-          ? 'Full inspection report connected'
-          : 'Inspection report backup is not available yet'
-      })
+      el('span', { text: 'Full inspection report connected' })
     );
-    input.disabled = !body.available;
-    sendButton.disabled = !body.available;
-    if (body.available) input.focus();
-  }).catch(error => {
-    status.className = 'ai-report-status ai-report-waiting';
-    status.replaceChildren(
-      el('span', { class: 'ai-status-dot', 'aria-hidden': 'true' }),
-      el('span', { text: error.message })
-    );
-  });
+    input.disabled = false;
+    sendButton.disabled = false;
+  } else {
+    portalApi(
+      `/api/agent/${encodeURIComponent(getConnectionId())}/report-status?inspectionId=${encodeURIComponent(inspection.id || '')}`
+    ).then(body => {
+      status.className = `ai-report-status ${body.available ? 'ai-report-ready' : 'ai-report-waiting'}`;
+      status.replaceChildren(
+        el('span', { class: 'ai-status-dot', 'aria-hidden': 'true' }),
+        el('span', {
+          text: body.available
+            ? 'Full inspection report connected'
+            : 'Inspection report backup is not available yet'
+        })
+      );
+      input.disabled = !body.available;
+      sendButton.disabled = !body.available;
+      if (body.available) input.focus();
+    }).catch(error => {
+      status.className = 'ai-report-status ai-report-waiting';
+      status.replaceChildren(
+        el('span', { class: 'ai-status-dot', 'aria-hidden': 'true' }),
+        el('span', { text: error.message })
+      );
+    });
+  }
 }
 
 function renderDashboard(data) {
@@ -555,6 +571,12 @@ function renderDashboard(data) {
 
 async function load() {
   try {
+    if (location.pathname === '/design-preview') {
+      const response = await fetch('/api/design-preview', { cache: 'no-store' });
+      if (!response.ok) throw new Error('Design preview is unavailable on this deployment.');
+      renderDashboard(await response.json());
+      return;
+    }
     if (!auth.connectionId && location.pathname === '/') {
       throw new Error('Open your personal Inspectology invite link once to connect this device.');
     }
