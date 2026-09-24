@@ -2083,15 +2083,28 @@ function createPortal(options = {}) {
             sendJson(res, 404, { error: 'Full inspection report PDF is not available to Inspectology AI yet' }); status = 404; return;
           }
 
-          const pdf = await googleDriveDownloadFile(backup.token, backup.fullReport.id);
-          const result = await askOpenAiAboutReport(
-            config,
-            pdf,
-            backup.fullReport.name,
-            question,
-            history,
-            inspection
-          );
+          let pdf;
+          try {
+            pdf = await googleDriveDownloadFile(backup.token, backup.fullReport.id);
+          } catch (error) {
+            error.safeDetail = `Report download failed: ${error.message}`;
+            throw error;
+          }
+
+          let result;
+          try {
+            result = await askOpenAiAboutReport(
+              config,
+              pdf,
+              backup.fullReport.name,
+              question,
+              history,
+              inspection
+            );
+          } catch (error) {
+            error.safeDetail = `OpenAI request failed: ${error.message}`;
+            throw error;
+          }
 
           sendJson(res, 200, {
             answer: result.answer,
