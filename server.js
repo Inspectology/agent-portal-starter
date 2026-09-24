@@ -109,6 +109,11 @@ function createConfig(env = process.env) {
     companyId: mode === 'live' ? validatedPositiveDecimalId(env.SPECTORA_COMPANY_ID, 'SPECTORA_COMPANY_ID') : '',
     signingSecret: env.PORTAL_SIGNING_SECRET || '',
     adminAccessKey: String(env.ADMIN_ACCESS_KEY || '').trim(),
+    googleDrive: {
+      serviceAccountEmail: String(env.GOOGLE_DRIVE_SERVICE_ACCOUNT_EMAIL || '').trim(),
+      privateKey: String(env.GOOGLE_DRIVE_SERVICE_ACCOUNT_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
+      backupFolderId: String(env.GOOGLE_DRIVE_BACKUP_FOLDER_ID || '').trim()
+    },
     publicOrigin: validatedOrigin(
       env.PORTAL_PUBLIC_ORIGIN || (env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${env.VERCEL_PROJECT_PRODUCTION_URL}` : ''),
       'PORTAL_PUBLIC_ORIGIN'
@@ -279,6 +284,116 @@ function resolvePortalOrigin(req, config) {
   const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
   const protocol = forwardedProto === 'http' && /^localhost(?::|$)/.test(host) ? 'http' : 'https';
   return `${protocol}://${host}`;
+}
+
+function base64UrlJson(value) {
+  return Buffer.from(JSON.stringify(value)).toString('base64url');
+}
+
+function requestJson(url, options = {}, body = null, maxBytes = 2_000_000) {
+  return new Promise((resolve, reject) => {
+    const target = url instanceof URL ? url : new URL(url);
+    const request = https.request(target, options, response => {
+      const chunks = [];
+      let bytes = 0;
+      response.on('data', chunk => {
+        bytes += chunk.length;
+        if (bytes > maxBytes) {
+          reject(new Error('External API response exceeded size limit'));
+          response.destroy();
+          return;
+        }
+        chunks.push(chunk);
+      });
+      response.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf8');
+        let json = null;
+        try { json = JSON.parse(raw || '{}'); } catch {}
+        resolve({
+          statusCode: Number(response.statusCode || 0),
+          headers: response.headers,
+          raw,
+          json
+        });
+      });
+      response.on('error', reject);
+    });
+    request.on('timeout', () => request.destroy(new Error('External API request timed out')));
+    request.on('error', reject);
+    if (body) request.write(body);
+    request.end();
+  });
+}
+
+async function googleDriveAccessToken(config) {
+  const drive = config.googleDrive || {};
+  if (!drive.serviceAccountEmail || !drive.privateKey || !drive.backupFolderId) {
+    throw authError('Google Drive service account is not configured', 503);
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const header = base64UrlJson({ alg: 'RS256', typ: 'JWT' });
+  const payload = base64UrlJson({
+    iss: drive.serviceAccountEmail,
+    scope: 'https://www.googleapis.com/auth/drive.readonly',
+    aud: 'https://oauth2.googleapis.com/token',
+    iat: now,
+    exp: now + 3600
+  });
+  const unsigned = `${header}.${payload}`;
+  const signature = crypto.sign('RSA-SHA256', Buffer.from(unsigned), drive.privateKey).toString('base64url');
+  const assertion = `${unsigned}.${signature}`;
+  const form = new URLSearchParams({
+    grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+    assertion
+  }).toString();
+
+  const response = await requestJson(
+    'https://oauth2.googleapis.com/token',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(form)
+      },
+      timeout: 15_000
+    },
+    form,
+    200_000
+  );
+
+  if (response.statusCode < 200 || response.statusCode > 299 || !response.json?.access_token) {
+    const message = response.json?.error_description || response.json?.error || `Google OAuth returned HTTP ${response.statusCode}`;
+    throw new Error(message);
+  }
+  return response.json.access_token;
+}
+
+async function googleDriveListChildren(accessToken, parentId) {
+  const params = new URLSearchParams({
+    q: `'${parentId}' in parents and trashed = false`,
+    pageSize: '1000',
+    fields: 'files(id,name,mimeType,size,createdTime,modifiedTime,webViewLink)',
+    supportsAllDrives: 'true',
+    includeItemsFromAllDrives: 'true'
+  });
+  const url = new URL(`https://www.googleapis.com/drive/v3/files?${params.toString()}`);
+  const response = await requestJson(url, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+    timeout: 15_000
+  });
+  if (response.statusCode < 200 || response.statusCode > 299 || !Array.isArray(response.json?.files)) {
+    const message = response.json?.error?.message || `Google Drive returned HTTP ${response.statusCode}`;
+    throw new Error(message);
+  }
+  return response.json.files;
+}
+
+function dateToBackupLabel(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) return '';
+  const [year, month, day] = String(value).split('-');
+  return `${month}/${day}/${year}`;
 }
 
 function assertCompanyScope(records, companyId) {
@@ -994,6 +1109,50 @@ function createPortal(options = {}) {
             };
           }).filter(agent => /^[1-9][0-9]*$/.test(agent.connectionId));
           sendJson(res, 200, { agents }); status = 200; return;
+        }
+        if (req.method === 'GET' && pathname === '/api/admin/drive-backup-test') {
+          const address = String(url.searchParams.get('address') || '').trim();
+          const date = String(url.searchParams.get('date') || '').trim();
+          if (!address || address.length > 200) {
+            sendJson(res, 400, { error: 'A property address is required' }); status = 400; return;
+          }
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+            sendJson(res, 400, { error: 'Inspection date must use YYYY-MM-DD format' }); status = 400; return;
+          }
+
+          const token = await googleDriveAccessToken(config);
+          const rootFiles = await googleDriveListChildren(token, config.googleDrive.backupFolderId);
+          const street = address.split(',')[0].trim().toLowerCase();
+          const dateLabel = dateToBackupLabel(date);
+
+          const matchingFolders = rootFiles.filter(file =>
+            file.mimeType === 'application/vnd.google-apps.folder' &&
+            String(file.name || '').toLowerCase().includes(street) &&
+            String(file.name || '').includes(dateLabel)
+          );
+
+          if (!matchingFolders.length) {
+            sendJson(res, 404, { error: 'No matching Spectora backup folder found' }); status = 404; return;
+          }
+
+          const folder = matchingFolders[0];
+          const files = await googleDriveListChildren(token, folder.id);
+          const pdfs = files.filter(file => file.mimeType === 'application/pdf');
+          const fullReport = pdfs.find(file =>
+            /inspectology home inspection report/i.test(file.name || '') &&
+            !/-summary\.pdf$/i.test(file.name || '')
+          ) || null;
+          const summaryReport = pdfs.find(file => /-summary\.pdf$/i.test(file.name || '')) || null;
+
+          sendJson(res, 200, {
+            folder: { id: folder.id, name: folder.name, webViewLink: folder.webViewLink || '' },
+            fullReport,
+            summaryReport,
+            pdfCount: pdfs.length,
+            files: pdfs
+          });
+          status = 200;
+          return;
         }
         if (req.method === 'GET' && pathname === '/api/admin/report-test') {
           const connectionId = validatedPositiveDecimalId(url.searchParams.get('connectionId'), 'Spectora connection ID');
