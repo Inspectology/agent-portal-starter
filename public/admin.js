@@ -298,6 +298,23 @@ networkTestForm.addEventListener('submit', async event => {
       }
     }
 
+    const authContexts = hermesContexts.filter(item =>
+      /(Authorization|Bearer|id_token|access_token|validate_access_token|report_view_id|report_views|AUTH_MISSING)/i.test(item.needle || '') ||
+      /(Authorization|Bearer|id_token|access_token|validate_access_token|report_view_id|report_views|AUTH_MISSING)/i.test(item.snippet || '')
+    );
+
+    if (authContexts.length) {
+      networkTestResults.append(el('h3', { class: 'scan-subheading auth-scan-heading', text: 'Auth flow clues' }));
+      for (const item of authContexts.slice(0, 20)) {
+        networkTestResults.append(
+          el('article', { class: 'bundle-context-card auth-context-card' }, [
+            el('strong', { text: item.needle || 'Auth' }),
+            el('code', { text: item.snippet || '' })
+          ])
+        );
+      }
+    }
+
     if (hermesContexts.length) {
       networkTestResults.append(el('h3', { class: 'scan-subheading', text: 'Hermes API context' }));
       for (const item of hermesContexts) {
