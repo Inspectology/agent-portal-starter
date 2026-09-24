@@ -555,7 +555,34 @@ function fetchHermesPublicReport(reportUrl, options = {}) {
 
 function summarizeJsonShape(value, maxKeys = 120) {
   const found = new Set();
-  const stack = [{ value, path: '
+  const stack = [{ value, path: '$', depth: 0 }];
+
+  while (stack.length && found.size < maxKeys) {
+    const current = stack.shift();
+    const item = current.value;
+    if (current.depth > 4 || item == null) continue;
+
+    if (Array.isArray(item)) {
+      found.add(`${current.path}[]`);
+      for (const child of item.slice(0, 3)) {
+        stack.push({ value: child, path: `${current.path}[]`, depth: current.depth + 1 });
+      }
+      continue;
+    }
+
+    if (typeof item === 'object') {
+      for (const [key, child] of Object.entries(item)) {
+        const childPath = `${current.path}.${key}`;
+        found.add(childPath);
+        stack.push({ value: child, path: childPath, depth: current.depth + 1 });
+        if (found.size >= maxKeys) break;
+      }
+    }
+  }
+
+  return [...found];
+}
+
 function isAllowedSpectoraAssetHost(hostname) {
   return hostname === 'reports.spectora.com' || hostname.endsWith('.spectora.com');
 }
