@@ -341,9 +341,11 @@ function installApp() {
   }
 }
 
-function renderProfileSection(agent) {
-  const saveMessage = el('p', { class: 'save-message', 'aria-live': 'polite' });
-  const form = el('form', { class: 'profile-form' }, [
+function openAgentInfo(agent) {
+  document.querySelector('.info-overlay')?.remove();
+
+  const saveMessage = el('p', { class: 'save-message info-save-message', 'aria-live': 'polite' });
+  const form = el('form', { class: 'profile-form info-profile-form' }, [
     el('div', { class: 'form-grid' }, [
       field('First name', 'firstName', agent.firstName, { autocomplete: 'given-name' }),
       field('Last name', 'lastName', agent.lastName, { autocomplete: 'family-name' }),
@@ -355,16 +357,26 @@ function renderProfileSection(agent) {
     ]),
     el('p', {
       class: 'profile-note',
-      text: 'Profile changes are saved in this Agent Dashboard. Spectora currently blocks agent email updates through its API.'
+      text: 'Update anything that has changed. Inspectology will be notified so we can keep your Spectora information current.'
     }),
-    el('button', { class: 'primary-button', type: 'submit', text: 'Save Profile' }),
+    el('button', { class: 'primary-button', type: 'submit', text: 'Update My Information' }),
     saveMessage
   ]);
+
+  const closePanel = () => {
+    overlay.classList.remove('info-overlay-open');
+    setTimeout(() => overlay.remove(), 160);
+    document.removeEventListener('keydown', onKeyDown);
+  };
+
+  const onKeyDown = event => {
+    if (event.key === 'Escape') closePanel();
+  };
 
   form.addEventListener('submit', async event => {
     event.preventDefault();
     const values = Object.fromEntries(new FormData(form).entries());
-    saveMessage.textContent = 'Saving profile…';
+    saveMessage.textContent = 'Saving changes…';
 
     let notificationSent = false;
     let notificationPending = false;
@@ -391,20 +403,60 @@ function renderProfileSection(agent) {
     currentData = { ...currentData, agent: { ...currentData.agent, ...values } };
 
     saveMessage.textContent = notificationSent
-      ? 'Profile saved. Inspectology was notified of your changes.'
+      ? 'Saved. Inspectology was notified of your changes.'
       : (notificationPending
-          ? 'Profile saved. Inspectology notification is pending setup.'
-          : 'Profile saved.');
+          ? 'Saved. Inspectology notification is pending setup.'
+          : 'Saved.');
 
-    setTimeout(() => renderDashboard(currentData), 900);
+    setTimeout(() => {
+      closePanel();
+      renderDashboard(currentData);
+    }, 850);
   });
 
-  return el('section', { class: 'section dashboard-section', id: 'profile' }, [
-    el('div', { class: 'section-heading' }, [
-      el('h2', { text: 'My Profile' }),
-      el('span', { class: 'section-kicker', text: 'Editable' })
+  const panel = el('section', {
+    class: 'info-sheet',
+    role: 'dialog',
+    'aria-modal': 'true',
+    'aria-label': 'My Info'
+  }, [
+    el('div', { class: 'info-sheet-header' }, [
+      el('div', {}, [
+        el('span', { class: 'info-kicker', text: 'Agent Profile' }),
+        el('h2', { text: 'My Info' }),
+        el('p', { text: 'Keep your contact information current with Inspectology.' })
+      ]),
+      el('button', {
+        class: 'info-close',
+        type: 'button',
+        text: '×',
+        'aria-label': 'Close My Info',
+        onclick: closePanel
+      })
     ]),
-    el('div', { class: 'profile-card' }, [form])
+    el('div', { class: 'info-sheet-body' }, [form])
+  ]);
+
+  const overlay = el('div', {
+    class: 'info-overlay',
+    onclick: event => {
+      if (event.target === overlay) closePanel();
+    }
+  }, [panel]);
+
+  document.body.append(overlay);
+  document.addEventListener('keydown', onKeyDown);
+  requestAnimationFrame(() => overlay.classList.add('info-overlay-open'));
+}
+
+function renderMyInfoButton(agent) {
+  return el('button', {
+    class: 'hero-info-button',
+    type: 'button',
+    onclick: () => openAgentInfo(agent)
+  }, [
+    el('span', { text: 'My Info' }),
+    el('span', { class: 'hero-info-arrow', text: '›', 'aria-hidden': 'true' })
   ]);
 }
 
@@ -882,7 +934,8 @@ function renderDashboard(data) {
       el('div', { class: 'tier' }, [
         el('span', { class: 'tier-dot', 'aria-hidden': 'true' }),
         document.createTextNode(tier.label || 'Partner')
-      ])
+      ]),
+      renderMyInfoButton(agent)
     ])
   );
 
@@ -1009,8 +1062,6 @@ function renderDashboard(data) {
     ])
   );
 
-  app.append(renderProfileSection(agent));
-
   app.append(renderInspectionHistory(inspections));
 
   app.append(
@@ -1019,7 +1070,7 @@ function renderDashboard(data) {
     ]),
     el('nav', { class: 'bottom-nav bottom-nav-three', 'aria-label': 'Agent app navigation' }, [
       el('a', { href: '#top', text: 'Home' }),
-      el('a', { href: '#profile', text: 'Profile' }),
+      el('button', { type: 'button', text: 'My Info', onclick: () => openAgentInfo(mergedAgent(currentData.agent)) }),
       el('a', { href: '#history', text: 'History' })
     ])
   );
