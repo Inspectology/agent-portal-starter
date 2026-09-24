@@ -919,7 +919,7 @@ function renderDashboard(data) {
           alt: 'Inspectology'
         })
       ]),
-      el('div', { class: 'badge', text: 'Agent Dashboard' })
+      el('div', { class: 'badge partner-dashboard-badge', text: 'Inspectology Partner Agent Dashboard' })
     ])
   );
 
@@ -928,14 +928,10 @@ function renderDashboard(data) {
   app.append(
     el('section', { class: 'hero' }, [
       profilePhotoControl,
+      renderMyInfoButton(agent),
       el('h1', { class: 'agent-name', text: `${agent.firstName} ${agent.lastName}` }),
       el('p', { class: 'agency', text: agent.agency || 'Real estate partner' }),
-      el('p', { class: 'agent-location', text: [agent.city, agent.state].filter(Boolean).join(', ') }),
-      el('div', { class: 'tier' }, [
-        el('span', { class: 'tier-dot', 'aria-hidden': 'true' }),
-        document.createTextNode(tier.label || 'Partner')
-      ]),
-      renderMyInfoButton(agent)
+      el('p', { class: 'agent-location', text: [agent.city, agent.state].filter(Boolean).join(', ') })
     ])
   );
 
