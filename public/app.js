@@ -665,8 +665,7 @@ function renderDashboard(data) {
       ]),
       el('div', { class: 'schedule-actions' }, [
         el('a', { class: 'schedule-button schedule-button-primary', href: company.bookingUrl, target: '_blank', rel: 'noopener' }, [
-          el('span', { class: 'schedule-button-icon', text: '＋', 'aria-hidden': 'true' }),
-          el('span', { text: 'Book Online' })
+          el('span', { text: 'Schedule an Inspection' })
         ]),
         el('a', { class: 'schedule-button', href: `tel:${company.phone.replace(/[^\d+]/g, '')}` }, [
           el('span', { class: 'schedule-button-icon', text: '☎', 'aria-hidden': 'true' }),
