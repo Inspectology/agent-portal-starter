@@ -858,6 +858,133 @@ async function emailInspector(inspection) {
   }
 }
 
+const THIRD_PARTY_VENDORS = Object.freeze([
+  {
+    key: 'termite',
+    service: 'Termite / WDO',
+    company: 'Lynn Pest Management',
+    email: 'lynnpestmgmt@gmail.com',
+    matches: value => /(termite|\bwdo\b|wood[- ]destroy)/i.test(value)
+  },
+  {
+    key: 'chimney',
+    service: 'Chimney',
+    company: 'Cambro Services',
+    email: 'mattglick@cambro.services',
+    matches: value => /chimney/i.test(value)
+  },
+  {
+    key: 'well-water',
+    service: 'Well / Water Testing',
+    company: 'Atlantic Blue',
+    email: 'Kaitlyn@atlanticblue.net',
+    matches: value => /(\bwell\b|water testing|water test|water quality|potability)/i.test(value)
+  },
+  {
+    key: 'septic',
+    service: 'Septic',
+    company: 'Young Septic',
+    email: 'Kaitlyn@atlanticblue.net',
+    matches: value => /septic/i.test(value)
+  }
+]);
+
+function thirdPartyVendorsForInspection(inspection) {
+  const services = String(inspection?.services || '');
+  return THIRD_PARTY_VENDORS.filter(vendor => vendor.matches(services));
+}
+
+function emailThirdPartyVendor(inspection, vendor) {
+  const property = inspection.location || inspection.address || 'Inspection property';
+  openEmailComposer({
+    title: `${vendor.service} Report Help`,
+    contacts: [{ name: vendor.company, email: vendor.email }],
+    subject: `Question about ${vendor.service} report - ${property}`,
+    message: `Hello ${vendor.company},\n\nI have a question about the ${vendor.service} report for ${property}.\n\n`
+  });
+}
+
+function openThirdPartyHelp(inspection) {
+  const vendors = thirdPartyVendorsForInspection(inspection);
+  if (!vendors.length) return;
+
+  if (vendors.length === 1) {
+    emailThirdPartyVendor(inspection, vendors[0]);
+    return;
+  }
+
+  document.querySelector('.vendor-overlay')?.remove();
+
+  const closePanel = () => {
+    overlay.classList.remove('vendor-overlay-open');
+    setTimeout(() => overlay.remove(), 160);
+    document.removeEventListener('keydown', onKeyDown);
+  };
+
+  const onKeyDown = event => {
+    if (event.key === 'Escape') closePanel();
+  };
+
+  const choices = el('div', { class: 'vendor-choice-list' });
+  for (const vendor of vendors) {
+    choices.append(
+      el('button', {
+        class: 'vendor-choice-button',
+        type: 'button',
+        onclick: () => {
+          closePanel();
+          setTimeout(() => emailThirdPartyVendor(inspection, vendor), 180);
+        }
+      }, [
+        el('span', { class: 'vendor-choice-service', text: vendor.service }),
+        el('strong', { text: vendor.company }),
+        el('span', { class: 'vendor-choice-email', text: vendor.email }),
+        el('span', { class: 'vendor-choice-action', text: 'Email vendor ›' })
+      ])
+    );
+  }
+
+  const panel = el('section', {
+    class: 'vendor-sheet',
+    role: 'dialog',
+    'aria-modal': 'true',
+    'aria-label': 'Third-party report help'
+  }, [
+    el('div', { class: 'vendor-sheet-header' }, [
+      el('div', {}, [
+        el('span', { class: 'vendor-kicker', text: 'Report Support' }),
+        el('h2', { text: 'Third-Party Report Help' }),
+        el('p', { text: 'Choose the service you have a question about.' })
+      ]),
+      el('button', {
+        class: 'vendor-close',
+        type: 'button',
+        text: '×',
+        'aria-label': 'Close vendor help',
+        onclick: closePanel
+      })
+    ]),
+    el('div', { class: 'vendor-sheet-body' }, [
+      el('p', {
+        class: 'vendor-property',
+        text: inspection.location || inspection.address || 'Inspection property'
+      }),
+      choices
+    ])
+  ]);
+
+  const overlay = el('div', {
+    class: 'vendor-overlay',
+    onclick: event => {
+      if (event.target === overlay) closePanel();
+    }
+  }, [panel]);
+
+  document.body.append(overlay);
+  document.addEventListener('keydown', onKeyDown);
+  requestAnimationFrame(() => overlay.classList.add('vendor-overlay-open'));
+}
+
 function renderInspectionCard(inspection) {
   const date = monthDay(inspection.date);
   const inspectionBody = el('div', { class: 'inspection-card-body' }, [
@@ -894,6 +1021,20 @@ function renderInspectionCard(inspection) {
         el('span', { class: 'inspection-mail-icon', text: '✉', 'aria-hidden': 'true' })
       ])
     );
+
+    const thirdPartyVendors = thirdPartyVendorsForInspection(inspection);
+    if (thirdPartyVendors.length) {
+      actions.append(
+        el('button', {
+          class: 'inspection-vendor-button',
+          type: 'button',
+          onclick: () => openThirdPartyHelp(inspection)
+        }, [
+          el('span', { text: 'Third-Party Report Help' }),
+          el('span', { class: 'inspection-vendor-icon', text: '?', 'aria-hidden': 'true' })
+        ])
+      );
+    }
 
     actions.append(
       el('button', {
