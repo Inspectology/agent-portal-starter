@@ -624,6 +624,44 @@ function openSpectoraInspection(inspection) {
   window.open(inspection.spectoraUrl, '_blank', 'noopener');
 }
 
+function officeEmailHref() {
+  const subject = encodeURIComponent('Inspectology Agent Dashboard Message');
+  return `mailto:info@inspect-ology.com?subject=${subject}`;
+}
+
+async function emailInspector(inspection) {
+  if (currentData?.meta?.mode === 'design-preview') {
+    alert(`Design preview: this will open a new email to the inspector assigned to ${inspection.location || inspection.address || 'this property'}.`);
+    return;
+  }
+
+  try {
+    const body = await portalApi(
+      `/api/agent/${encodeURIComponent(getConnectionId())}/inspector-contact?inspectionId=${encodeURIComponent(inspection.id || '')}`
+    );
+
+    const contacts = Array.isArray(body.contacts) ? body.contacts : [];
+    if (!contacts.length) throw new Error('Inspector email is not available for this inspection.');
+
+    const emails = [...new Set(contacts.map(contact => contact.email).filter(Boolean))];
+    if (!emails.length) throw new Error('Inspector email is not available for this inspection.');
+
+    const inspectorNames = [...new Set(contacts.map(contact => contact.name).filter(Boolean))];
+    const property = inspection.location || inspection.address || 'Inspection property';
+    const subject = encodeURIComponent(`Question about inspection - ${property}`);
+    const greeting = inspectorNames.length === 1 ? `Hi ${inspectorNames[0]},` : 'Hello,';
+    const message = encodeURIComponent(
+      `${greeting}\n\nI have a question about the inspection at ${property}.\n\n`
+    );
+
+    location.href = `mailto:${emails.join(',')}?subject=${subject}&body=${message}`;
+  } catch (error) {
+    alert(
+      `${error.message}\n\nYou can also contact the Inspectology office at info@inspect-ology.com.`
+    );
+  }
+}
+
 function renderInspectionCard(inspection) {
   const date = monthDay(inspection.date);
   const inspectionBody = el('div', { class: 'inspection-card-body' }, [
@@ -649,6 +687,17 @@ function renderInspectionCard(inspection) {
         ])
       );
     }
+
+    actions.append(
+      el('button', {
+        class: 'inspection-inspector-button',
+        type: 'button',
+        onclick: () => emailInspector(inspection)
+      }, [
+        el('span', { text: 'Email Inspector' }),
+        el('span', { class: 'inspection-mail-icon', text: '✉', 'aria-hidden': 'true' })
+      ])
+    );
 
     actions.append(
       el('button', {
@@ -856,7 +905,7 @@ function renderDashboard(data) {
           el('span', { class: 'schedule-button-icon', text: '☎', 'aria-hidden': 'true' }),
           el('span', { text: 'Call' })
         ]),
-        el('a', { class: 'schedule-button', href: company.whatsappUrl, target: '_blank', rel: 'noopener' }, [
+        el('a', { class: 'schedule-button', href: officeEmailHref() }, [
           el('span', { class: 'schedule-button-icon', text: '✉', 'aria-hidden': 'true' }),
           el('span', { text: 'Message' })
         ])
@@ -966,7 +1015,7 @@ function renderDashboard(data) {
 
   app.append(
     el('footer', { class: 'footer' }, [
-      document.createTextNode(`${company.license} | ${company.website}`)
+      document.createTextNode(company.website)
     ]),
     el('nav', { class: 'bottom-nav bottom-nav-three', 'aria-label': 'Agent app navigation' }, [
       el('a', { href: '#top', text: 'Home' }),
