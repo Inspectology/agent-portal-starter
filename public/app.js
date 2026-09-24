@@ -680,31 +680,57 @@ function renderDashboard(data) {
     ])
   );
 
-  app.append(
-    el('section', { class: 'section dashboard-section' }, [
-      el('h2', { text: 'Relationship Snapshot' }),
-      el('div', { class: 'metrics' }, [
-        el('div', { class: 'metric' }, [el('strong', { text: stats.totalInspections }), el('span', { text: 'Total' })]),
-        el('div', { class: 'metric' }, [el('strong', { text: stats.buyingInspections }), el('span', { text: 'Buying' })]),
-        el('div', { class: 'metric' }, [el('strong', { text: stats.sellingInspections }), el('span', { text: 'Selling' })])
-      ])
-    ])
-  );
+  const totalInspections = Number(stats.totalInspections || 0);
+  const partnershipMilestone = totalInspections >= 100
+    ? '100+ inspections together'
+    : totalInspections >= 50
+      ? '50+ inspections together'
+      : totalInspections >= 25
+        ? '25+ inspections together'
+        : totalInspections >= 10
+          ? '10+ inspections together'
+          : '';
 
   app.append(
-    el('section', { class: 'section dashboard-section' }, [
-      el('h2', { text: 'Partnership' }),
-      el('div', { class: 'partnership' }, [
-        el('div', { class: 'partnership-row' }, [
-          el('span', { text: fmtDate(stats.firstInspection) || 'Start' }),
-          el('span', { text: fmtDate(stats.lastInspection) || 'Present' })
+    el('section', { class: 'section dashboard-section partnership-section' }, [
+      el('div', { class: 'section-heading partnership-heading' }, [
+        el('div', {}, [
+          el('h2', { text: 'Your Inspectology Partnership' }),
+          el('p', { class: 'section-description', text: 'A quick look at the inspections we have completed together.' })
         ]),
-        el('div', { class: 'bar', 'aria-hidden': 'true' }, [el('span')]),
-        el('p', {
-          class: 'privacy-note',
-          text: portalModeCopy.modeNotice(data.meta?.mode)
-        })
-      ])
+        partnershipMilestone
+          ? el('span', { class: 'partnership-badge', text: partnershipMilestone })
+          : document.createTextNode('')
+      ]),
+      el('div', { class: 'partnership-metrics' }, [
+        el('div', { class: 'partnership-metric partnership-metric-primary' }, [
+          el('strong', { text: totalInspections }),
+          el('span', { text: 'Inspections Together' })
+        ]),
+        el('div', { class: 'partnership-metric' }, [
+          el('strong', { text: stats.buyingInspections }),
+          el('span', { text: 'Buyer Inspections' })
+        ]),
+        el('div', { class: 'partnership-metric' }, [
+          el('strong', { text: stats.sellingInspections }),
+          el('span', { text: 'Seller Inspections' })
+        ])
+      ]),
+      el('div', { class: 'partnership-dates' }, [
+        el('div', {}, [
+          el('span', { text: 'Partner since' }),
+          el('strong', { text: fmtDate(stats.firstInspection) || 'Not available' })
+        ]),
+        el('div', {}, [
+          el('span', { text: 'Most recent inspection' }),
+          el('strong', { text: fmtDate(stats.lastInspection) || 'Not available' })
+        ])
+      ]),
+      el('p', { class: 'partnership-thank-you', text: 'Thanks for trusting Inspectology with your clients.' }),
+      el('p', {
+        class: 'privacy-note partnership-privacy',
+        text: portalModeCopy.modeNotice(data.meta?.mode)
+      })
     ])
   );
 
