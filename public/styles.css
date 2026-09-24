@@ -2141,3 +2141,8 @@ input:focus-visible,
   min-width: 150px;
 }
 
+.hero-profile-actions .hero-info-button {
+  justify-content: center;
+  text-align: center;
+}
+
