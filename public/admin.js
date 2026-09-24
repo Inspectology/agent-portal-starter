@@ -26,6 +26,11 @@ const reportApiTestForm = document.getElementById('reportApiTestForm');
 const reportApiTestUrl = document.getElementById('reportApiTestUrl');
 const reportApiTestMessage = document.getElementById('reportApiTestMessage');
 const reportApiTestResults = document.getElementById('reportApiTestResults');
+const driveBackupForm = document.getElementById('driveBackupForm');
+const driveBackupAddress = document.getElementById('driveBackupAddress');
+const driveBackupDate = document.getElementById('driveBackupDate');
+const driveBackupMessage = document.getElementById('driveBackupMessage');
+const driveBackupResults = document.getElementById('driveBackupResults');
 
 let adminKey = sessionStorage.getItem('inspectologyAdminKey') || '';
 
@@ -153,6 +158,52 @@ function renderAgent(agent) {
     status
   ]);
 }
+
+driveBackupForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  driveBackupResults.replaceChildren();
+  driveBackupMessage.textContent = 'Checking Inspectology Google Drive backup...';
+
+  const params = new URLSearchParams({
+    address: driveBackupAddress.value.trim(),
+    date: driveBackupDate.value
+  });
+
+  try {
+    const body = await api(`/api/admin/drive-backup-test?${params.toString()}`);
+    driveBackupMessage.textContent = body.fullReport
+      ? 'Success. Vercel found the inspection folder and full home inspection PDF.'
+      : `Found the backup folder and ${body.pdfCount || 0} PDFs, but no full home inspection report was identified.`;
+
+    driveBackupResults.append(
+      el('div', { class: 'report-test-summary' }, [
+        el('strong', { text: body.folder?.name || 'Spectora backup folder' }),
+        el('span', { text: `PDF files: ${body.pdfCount || 0}` }),
+        el('span', { text: body.fullReport ? `Full report: ${body.fullReport.name}` : 'Full report: Not found' }),
+        el('span', { text: body.summaryReport ? `Summary: ${body.summaryReport.name}` : 'Summary: Not found' })
+      ])
+    );
+
+    for (const file of body.files || []) {
+      const children = [
+        el('strong', { text: file.name || 'PDF' }),
+        el('span', { text: file.size ? `${Math.round(Number(file.size) / 1024 / 1024 * 10) / 10} MB` : '' })
+      ];
+      if (file.webViewLink) {
+        children.push(el('a', {
+          class: 'link-button',
+          href: file.webViewLink,
+          target: '_blank',
+          rel: 'noopener',
+          text: 'Open in Drive'
+        }));
+      }
+      driveBackupResults.append(el('article', { class: 'report-file-card' }, children));
+    }
+  } catch (error) {
+    driveBackupMessage.textContent = error.message;
+  }
+});
 
 reportLinkTestForm.addEventListener('submit', async event => {
   event.preventDefault();
