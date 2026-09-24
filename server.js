@@ -527,41 +527,6 @@ function googleDriveDownloadFile(accessToken, fileId, maxBytes = 30_000_000) {
   });
 }
 
-function streamGoogleDrivePdf(res, accessToken, fileId, filename) {
-  const id = encodeURIComponent(String(fileId || ''));
-  const url = new URL(`https://www.googleapis.com/drive/v3/files/${id}?alt=media&supportsAllDrives=true`);
-
-  return new Promise((resolve, reject) => {
-    const request = https.get(url, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-      timeout: 30_000
-    }, response => {
-      if (response.statusCode < 200 || response.statusCode > 299) {
-        const statusCode = Number(response.statusCode || 0);
-        response.resume();
-        reject(new Error(`Google Drive report returned HTTP ${statusCode}`));
-        return;
-      }
-
-      const safeFilename = String(filename || 'inspection-report.pdf')
-        .replace(/[\r\n"]/g, '')
-        .slice(0, 180);
-
-      res.writeHead(200, headers({
-        'Content-Type': 'application/pdf',
-        'Content-Disposition': `inline; filename="${safeFilename}"`,
-        'Cache-Control': 'private, no-store, max-age=0'
-      }));
-
-      response.pipe(res);
-      response.on('end', resolve);
-      response.on('error', reject);
-    });
-    request.on('timeout', () => request.destroy(new Error('Google Drive report request timed out')));
-    request.on('error', reject);
-  });
-}
-
 async function sendProfileChangeNotification(config, connectionId, agent, changes) {
   const email = config.profileNotifications || {};
   if (!email.resendApiKey || !email.to || !email.from) {
@@ -804,7 +769,10 @@ function mapInspection(insp) {
     services: [attrs.service_names, attrs.service_add_on_names].filter(Boolean).join(' + '),
     inspector: attrs.inspector_name || '',
     status: attrs.canceled_at ? 'Canceled' : (attrs.published_at ? 'Report Published' : 'Scheduled'),
-    published: Boolean(attrs.published_at)
+    published: Boolean(attrs.published_at),
+    spectoraUrl: attrs.slug
+      ? `https://portal.spectora.com/inspection/${encodeURIComponent(String(attrs.slug))}`
+      : ''
   };
 }
 
@@ -1817,35 +1785,6 @@ function createPortal(options = {}) {
           return;
         }
 
-        if (req.method === 'GET' && operation === 'report') {
-          const inspectionId = String(url.searchParams.get('inspectionId') || '').trim();
-          const payload = await getAgentPayload(connectionId);
-          if (!payload) { sendJson(res, 404, { error: 'Agent not found' }); status = 404; return; }
-
-          const inspection = (payload.inspections || []).find(item => String(item.id || '') === inspectionId);
-          if (!inspection || !inspection.published) {
-            sendJson(res, 404, { error: 'Published inspection not found for this agent' }); status = 404; return;
-          }
-
-          if (config.mode === 'demo') {
-            sendJson(res, 404, { error: 'Report viewing is unavailable in demo mode' }); status = 404; return;
-          }
-
-          const backup = await findGoogleDriveBackup(
-            config,
-            String(req.headers['x-vercel-oidc-token'] || ''),
-            inspection.location,
-            inspection.date
-          );
-
-          if (!backup.fullReport) {
-            sendJson(res, 404, { error: 'Full inspection report PDF is not available yet' }); status = 404; return;
-          }
-
-          status = 200;
-          await streamGoogleDrivePdf(res, backup.token, backup.fullReport.id, backup.fullReport.name);
-          return;
-        }
 
         if (req.method === 'POST' && operation === 'profile-change') {
           const body = await readJsonBody(req, 16_000);
