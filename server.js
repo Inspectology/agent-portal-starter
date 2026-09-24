@@ -331,14 +331,16 @@ async function googleDriveAccessToken(config) {
   const drive = config.googleDrive || {};
   const oidcToken = String(process.env.VERCEL_OIDC_TOKEN || '').trim();
 
-  if (
-    !drive.projectNumber ||
-    !drive.poolId ||
-    !drive.providerId ||
-    !drive.serviceAccountEmail ||
-    !drive.backupFolderId
-  ) {
-    throw authError('Google Drive Workload Identity is not configured', 503);
+  const missingDriveConfig = [
+    ['GOOGLE_CLOUD_PROJECT_NUMBER', drive.projectNumber],
+    ['GOOGLE_WORKLOAD_IDENTITY_POOL_ID', drive.poolId],
+    ['GOOGLE_WORKLOAD_IDENTITY_PROVIDER_ID', drive.providerId],
+    ['GOOGLE_DRIVE_SERVICE_ACCOUNT_EMAIL', drive.serviceAccountEmail],
+    ['GOOGLE_DRIVE_BACKUP_FOLDER_ID', drive.backupFolderId]
+  ].filter(([, value]) => !value).map(([name]) => name);
+
+  if (missingDriveConfig.length) {
+    throw authError(`Google Drive Workload Identity is missing: ${missingDriveConfig.join(', ')}`, 503);
   }
   if (!oidcToken) {
     throw authError('Vercel OIDC token is unavailable in this deployment', 503);
