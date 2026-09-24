@@ -110,8 +110,10 @@ function createConfig(env = process.env) {
     signingSecret: env.PORTAL_SIGNING_SECRET || '',
     adminAccessKey: String(env.ADMIN_ACCESS_KEY || '').trim(),
     googleDrive: {
+      projectNumber: String(env.GOOGLE_CLOUD_PROJECT_NUMBER || '').trim(),
+      poolId: String(env.GOOGLE_WORKLOAD_IDENTITY_POOL_ID || '').trim(),
+      providerId: String(env.GOOGLE_WORKLOAD_IDENTITY_PROVIDER_ID || '').trim(),
       serviceAccountEmail: String(env.GOOGLE_DRIVE_SERVICE_ACCOUNT_EMAIL || '').trim(),
-      privateKey: String(env.GOOGLE_DRIVE_SERVICE_ACCOUNT_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
       backupFolderId: String(env.GOOGLE_DRIVE_BACKUP_FOLDER_ID || '').trim()
     },
     publicOrigin: validatedOrigin(
@@ -327,46 +329,83 @@ function requestJson(url, options = {}, body = null, maxBytes = 2_000_000) {
 
 async function googleDriveAccessToken(config) {
   const drive = config.googleDrive || {};
-  if (!drive.serviceAccountEmail || !drive.privateKey || !drive.backupFolderId) {
-    throw authError('Google Drive service account is not configured', 503);
+  const oidcToken = String(process.env.VERCEL_OIDC_TOKEN || '').trim();
+
+  if (
+    !drive.projectNumber ||
+    !drive.poolId ||
+    !drive.providerId ||
+    !drive.serviceAccountEmail ||
+    !drive.backupFolderId
+  ) {
+    throw authError('Google Drive Workload Identity is not configured', 503);
+  }
+  if (!oidcToken) {
+    throw authError('Vercel OIDC token is unavailable in this deployment', 503);
   }
 
-  const now = Math.floor(Date.now() / 1000);
-  const header = base64UrlJson({ alg: 'RS256', typ: 'JWT' });
-  const payload = base64UrlJson({
-    iss: drive.serviceAccountEmail,
-    scope: 'https://www.googleapis.com/auth/drive.readonly',
-    aud: 'https://oauth2.googleapis.com/token',
-    iat: now,
-    exp: now + 3600
-  });
-  const unsigned = `${header}.${payload}`;
-  const signature = crypto.sign('RSA-SHA256', Buffer.from(unsigned), drive.privateKey).toString('base64url');
-  const assertion = `${unsigned}.${signature}`;
-  const form = new URLSearchParams({
-    grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-    assertion
+  const audience = `//iam.googleapis.com/projects/${drive.projectNumber}/locations/global/workloadIdentityPools/${drive.poolId}/providers/${drive.providerId}`;
+  const exchangeForm = new URLSearchParams({
+    grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
+    audience,
+    scope: 'https://www.googleapis.com/auth/cloud-platform',
+    requested_token_type: 'urn:ietf:params:oauth:token-type:access_token',
+    subject_token: oidcToken,
+    subject_token_type: 'urn:ietf:params:oauth:token-type:jwt'
   }).toString();
 
-  const response = await requestJson(
-    'https://oauth2.googleapis.com/token',
+  const exchange = await requestJson(
+    'https://sts.googleapis.com/v1/token',
     {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
-        'Content-Length': Buffer.byteLength(form)
+        'Content-Length': Buffer.byteLength(exchangeForm)
       },
       timeout: 15_000
     },
-    form,
-    200_000
+    exchangeForm,
+    300_000
   );
 
-  if (response.statusCode < 200 || response.statusCode > 299 || !response.json?.access_token) {
-    const message = response.json?.error_description || response.json?.error || `Google OAuth returned HTTP ${response.statusCode}`;
+  if (exchange.statusCode < 200 || exchange.statusCode > 299 || !exchange.json?.access_token) {
+    const message = exchange.json?.error_description || exchange.json?.error || `Google STS returned HTTP ${exchange.statusCode}`;
     throw new Error(message);
   }
-  return response.json.access_token;
+
+  const impersonationBody = JSON.stringify({
+    scope: ['https://www.googleapis.com/auth/drive.readonly'],
+    lifetime: '3600s'
+  });
+  const serviceAccount = encodeURIComponent(drive.serviceAccountEmail);
+  const impersonationUrl =
+    `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${serviceAccount}:generateAccessToken`;
+
+  const impersonation = await requestJson(
+    impersonationUrl,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${exchange.json.access_token}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(impersonationBody)
+      },
+      timeout: 15_000
+    },
+    impersonationBody,
+    300_000
+  );
+
+  if (
+    impersonation.statusCode < 200 ||
+    impersonation.statusCode > 299 ||
+    !impersonation.json?.accessToken
+  ) {
+    const message = impersonation.json?.error?.message || `Google IAM Credentials returned HTTP ${impersonation.statusCode}`;
+    throw new Error(message);
+  }
+
+  return impersonation.json.accessToken;
 }
 
 async function googleDriveListChildren(accessToken, parentId) {
