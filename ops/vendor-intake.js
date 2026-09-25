@@ -521,6 +521,15 @@ async function listSpectoraAttachments(apiKey, inspectionId) {
   return spectoraJson(apiKey, `/v2/inspection_attachments?${params.toString()}`);
 }
 
+async function listSpectoraAttachmentPage(apiKey, page = 1, pageSize = 200) {
+  const params = new URLSearchParams({
+    'page[number]': String(page),
+    'page[size]': String(pageSize),
+    sort: '-created_at'
+  });
+  return spectoraJson(apiKey, `/v2/inspection_attachments?${params.toString()}`);
+}
+
 async function uploadSpectoraAttachment(apiKey, {
   inspectionId,
   file,
@@ -572,6 +581,7 @@ module.exports = {
   extractInvoiceData,
   duplicateAttachment,
   extractStreetCandidates,
+  listSpectoraAttachmentPage,
   listSpectoraAttachments,
   normalizeStreet,
   normalizeText,
