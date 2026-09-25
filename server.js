@@ -2745,6 +2745,67 @@ function createPortal(options = {}) {
           return;
         }
 
+        if (req.method === 'GET' && pathname === '/api/admin/ops/attachment-types') {
+          const targets = [
+            'Well Yield Report',
+            'Water Quality Report',
+            'Termite Report',
+            'Chimney Report'
+          ];
+          const byName = new Map(targets.map(name => [name.toLowerCase(), {
+            name,
+            attachmentTypes: new Set(),
+            examples: []
+          }]));
+          let scanned = 0;
+          let pagesScanned = 0;
+
+          for (let page = 1; page <= 10; page += 1) {
+            const response = await spectoraJson(
+              config.apiKey,
+              '/v2/inspection_attachments?page[size]=200&page[number]=' + page + '&sort=-created_at'
+            );
+            const items = Array.isArray(response?.data) ? response.data : [];
+            pagesScanned += 1;
+            scanned += items.length;
+
+            for (const item of items) {
+              const attributes = item?.attributes || {};
+              const name = String(attributes.name || '').trim();
+              const target = byName.get(name.toLowerCase());
+              if (!target) continue;
+              const type = String(attributes.attachment_type || '').trim();
+              if (type) target.attachmentTypes.add(type);
+              if (target.examples.length < 3) {
+                target.examples.push({
+                  inspectionId: String(attributes.inspection_id || ''),
+                  filename: String(attributes.file_file_name || ''),
+                  createdAt: String(attributes.created_at || ''),
+                  attachmentType: type
+                });
+              }
+            }
+
+            const allFound = [...byName.values()].every(item => item.attachmentTypes.size > 0);
+            const pagination = response?.meta?.pagination || {};
+            const lastPage = Number(pagination.last || 0);
+            if (allFound || !items.length || (lastPage && page >= lastPage)) break;
+          }
+
+          sendJson(res, 200, {
+            status: 'ok',
+            scanned,
+            pagesScanned,
+            mappings: [...byName.values()].map(item => ({
+              name: item.name,
+              attachmentTypes: [...item.attachmentTypes],
+              examples: item.examples
+            }))
+          });
+          status = 200;
+          return;
+        }
+
         if (req.method === 'POST' && pathname === '/api/admin/invite') {
           const body = await readJsonBody(req);
           const connectionId = validatedPositiveDecimalId(body.connectionId, 'Spectora connection ID');
