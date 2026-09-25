@@ -112,7 +112,7 @@ function createConfig(env = process.env) {
     adminAuth: {
       allowedEmails: String(
         env.ADMIN_ALLOWED_EMAILS ||
-        'jordanbird@inspect-ology.com,jvandenelzen@inspect-ology.com'
+        'jordanbird@inspect-ology.com,jvandenelzen@inspect-ology.com,ndinsmore@inspect-ology.com'
       )
         .split(',')
         .map(value => value.trim().toLowerCase())
