@@ -331,6 +331,17 @@ function adminEmailAllowed(config, email) {
   return config.adminAuth.allowedEmails.includes(normalizedAdminEmail(email));
 }
 
+function adminEmailAuthConfigured(config) {
+  const auth = config.adminAuth || {};
+  return Boolean(
+    auth.resendApiKey &&
+    auth.from &&
+    Array.isArray(auth.allowedEmails) &&
+    auth.allowedEmails.length &&
+    Buffer.byteLength(config.signingSecret || '', 'utf8') >= 32
+  );
+}
+
 function createAdminChallenge(config, email, code) {
   const normalizedEmail = normalizedAdminEmail(email);
   const nonce = crypto.randomBytes(18).toString('base64url');
@@ -1820,18 +1831,123 @@ function createPortal(options = {}) {
           meta: { mode: 'design-preview' }
         }); status = 200; return;
       }
+      if (req.method === 'POST' && pathname === '/api/admin/auth/request-code') {
+        if (!adminEmailAuthConfigured(config)) {
+          sendJson(res, 503, { error: 'Admin email sign-in is not configured yet' }); status = 503; return;
+        }
+
+        const body = await readJsonBody(req, 8_000);
+        const email = normalizedAdminEmail(body.email);
+        if (!email || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+          sendJson(res, 400, { error: 'Enter a valid email address' }); status = 400; return;
+        }
+
+        const sourceIp = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '')
+          .split(',')[0].trim();
+        const rateKey = crypto.createHash('sha256')
+          .update(`admin-code:${sourceIp}:${email}`)
+          .digest('hex');
+
+        if (!allowAdminAuthRequest(rateKey)) {
+          sendJson(res, 429, { error: 'Too many sign-in attempts. Please wait a few minutes and try again.' });
+          status = 429;
+          return;
+        }
+
+        const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+        const challenge = createAdminChallenge(config, email, code);
+
+        if (adminEmailAllowed(config, email)) {
+          const delivery = await sendAdminSignInCode(config, email, code);
+          if (!delivery.sent) {
+            sendJson(res, 503, { error: 'Unable to send the sign-in code right now. Please try again.' });
+            status = 503;
+            return;
+          }
+        }
+
+        sendJson(res, 200, {
+          status: 'ok',
+          challenge,
+          expiresInMinutes: Math.round(config.adminAuth.codeTtlSeconds / 60),
+          message: 'If this email is authorized, a sign-in code has been sent.'
+        });
+        status = 200;
+        return;
+      }
+
+      if (req.method === 'POST' && pathname === '/api/admin/auth/verify') {
+        if (!adminEmailAuthConfigured(config)) {
+          sendJson(res, 503, { error: 'Admin email sign-in is not configured yet' }); status = 503; return;
+        }
+
+        const body = await readJsonBody(req, 12_000);
+        const email = normalizedAdminEmail(body.email);
+        const code = String(body.code || '').trim();
+        const challenge = String(body.challenge || '').trim();
+
+        const sourceIp = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '')
+          .split(',')[0].trim();
+        const rateKey = crypto.createHash('sha256')
+          .update(`admin-verify:${sourceIp}:${email}`)
+          .digest('hex');
+
+        if (!allowAdminAuthRequest(rateKey)) {
+          sendJson(res, 429, { error: 'Too many sign-in attempts. Please wait a few minutes and try again.' });
+          status = 429;
+          return;
+        }
+
+        let verifiedEmail;
+        try {
+          verifiedEmail = verifyAdminChallenge(config, challenge, email, code);
+        } catch {
+          sendJson(res, 401, { error: 'Invalid or expired sign-in code' }); status = 401; return;
+        }
+
+        const session = createAdminSession(config, verifiedEmail);
+        try {
+          await sendAdminSecurityNotice(config, verifiedEmail);
+        } catch {}
+
+        sendJson(
+          res,
+          200,
+          { status: 'ok', email: verifiedEmail },
+          { 'Set-Cookie': adminSessionCookie(config, session) }
+        );
+        status = 200;
+        return;
+      }
+
+      if (req.method === 'POST' && pathname === '/api/admin/auth/logout') {
+        sendJson(
+          res,
+          200,
+          { status: 'ok' },
+          { 'Set-Cookie': clearAdminSessionCookie() }
+        );
+        status = 200;
+        return;
+      }
+
       if (pathname.startsWith('/api/admin/')) {
-        if (!config.adminAccessKey) {
+        if (!config.adminAccessKey && !adminEmailAuthConfigured(config)) {
           sendJson(res, 503, { error: 'Admin access is not configured' }); status = 503; return;
         }
-        if (!adminAuthorized(req, config)) {
-          sendJson(res, 401, { error: 'Invalid admin access key' }); status = 401; return;
+        const identity = adminIdentity(req, config);
+        if (!identity) {
+          sendJson(res, 401, { error: 'Admin sign-in required' }); status = 401; return;
         }
         if (req.method === 'GET' && pathname === '/api/admin/session') {
           const drive = config.googleDrive || {};
           const profileEmail = config.profileNotifications || {};
           sendJson(res, 200, {
             status: 'ok',
+            admin: {
+              email: identity.email || '',
+              method: identity.method
+            },
             readiness: {
               environment: config.deploymentEnvironment || config.mode || 'unknown',
               spectora: Boolean(
@@ -1853,7 +1969,8 @@ function createPortal(options = {}) {
                 profileEmail.to &&
                 profileEmail.from
               ),
-              adminAccess: Boolean(config.adminAccessKey)
+              adminAccess: Boolean(config.adminAccessKey || adminEmailAuthConfigured(config)),
+              adminEmailLogin: adminEmailAuthConfigured(config)
             }
           });
           status = 200;
