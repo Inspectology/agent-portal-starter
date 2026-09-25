@@ -1,12 +1,16 @@
 'use strict';
 
-const CACHE_NAME = 'inspectology-agent-v40';
+const CACHE_NAME = 'inspectology-agent-v41';
 const STATIC_ASSETS = [
   '/',
   '/styles.css',
   '/app.js',
   '/mode-copy.js',
   '/manifest.webmanifest',
+  '/ivy',
+  '/ivy.css',
+  '/ivy.js',
+  '/ivy.webmanifest',
   '/assets/inspectology-app.svg',
   '/assets/mock-agent.svg'
 ];
@@ -33,14 +37,14 @@ self.addEventListener('fetch', event => {
     event.respondWith(
       fetch(request).then(response => {
         const copy = response.clone();
-        caches.open(CACHE_NAME).then(cache => cache.put('/', copy));
+        caches.open(CACHE_NAME).then(cache => cache.put(request, copy));
         return response;
-      }).catch(() => caches.match('/'))
+      }).catch(() => caches.match(request).then(cached => cached || caches.match('/')))
     );
     return;
   }
 
-  const freshFirst = ['/app.js', '/admin.js', '/styles.css', '/mode-copy.js', '/manifest.webmanifest', '/sw.js'].includes(url.pathname);
+  const freshFirst = ['/app.js', '/admin.js', '/ivy.js', '/ivy.css', '/styles.css', '/mode-copy.js', '/manifest.webmanifest', '/ivy.webmanifest', '/sw.js'].includes(url.pathname);
   if (freshFirst) {
     event.respondWith(
       fetch(request).then(response => {
