@@ -931,6 +931,81 @@ function openAiOutputText(payload) {
   return parts.join('\n').trim();
 }
 
+async function askIvyOperations(config, prompt, identity, activity, exceptions) {
+  if (!config.ai.apiKey) throw authError('IVY AI is not configured yet', 503);
+
+  const cleanPrompt = String(prompt || '').trim().slice(0, 800);
+  if (!cleanPrompt) throw authError('Enter a command for IVY', 400);
+
+  const operationalContext = {
+    currentTime: new Date().toISOString(),
+    staffEmail: String(identity?.email || ''),
+    recentVendorActivity: activity.slice(0, 40),
+    openExceptions: exceptions.slice(0, 40)
+  };
+
+  const instructions = [
+    'You are IVY, the Inspectology Virtual Operations Assistant.',
+    'This is the staff mobile command center.',
+    'Answer only from the operational context supplied in this request.',
+    'Be concise, practical, and conversational.',
+    'You can answer questions about recent vendor reports, vendor activity, statuses, property addresses, and open exceptions.',
+    'This first mobile command version is read-only.',
+    'Do not claim that you sent an email, replied to a message, changed Spectora, uploaded a file, resolved an exception, scheduled anything, or took another external action.',
+    'If the staff member asks you to perform an action, clearly say that action commands are not enabled in the mobile command center yet and that no action was taken.',
+    'Do not invent missing report, email, client, inspection, or vendor information.',
+    'If the requested information is outside the supplied context, say what is missing.'
+  ].join(' ');
+
+  const requestBody = JSON.stringify({
+    model: config.ai.model,
+    store: false,
+    max_output_tokens: 650,
+    instructions,
+    input: [{
+      role: 'user',
+      content: [{
+        type: 'input_text',
+        text: [
+          'Operational context:',
+          JSON.stringify(operationalContext),
+          '',
+          'Staff command:',
+          cleanPrompt
+        ].join('\n')
+      }]
+    }]
+  });
+
+  const response = await requestJson(
+    'https://api.openai.com/v1/responses',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.ai.apiKey}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(requestBody)
+      },
+      timeout: 45_000
+    },
+    requestBody,
+    1_000_000
+  );
+
+  if (response.statusCode < 200 || response.statusCode > 299 || !response.json) {
+    const message = response.json?.error?.message || `OpenAI returned HTTP ${response.statusCode}`;
+    throw new Error(message);
+  }
+
+  const answer = openAiOutputText(response.json);
+  if (!answer) throw new Error('IVY returned an empty answer');
+
+  return {
+    answer,
+    model: response.json.model || config.ai.model
+  };
+}
+
 async function askOpenAiAboutReport(config, pdfBuffer, filename, question, history, inspection) {
   if (!config.ai.apiKey) throw authError('Inspectology AI is not configured yet', 503);
 
@@ -1853,7 +1928,9 @@ function createPortal(options = {}) {
   function sendStatic(res, pathname) {
     const requested = pathname === '/admin' || pathname.startsWith('/admin/')
       ? '/admin.html'
-      : (pathname === '/' || pathname === '/design-preview' || pathname.startsWith('/agent/') ? '/index.html' : pathname);
+      : (pathname === '/ivy' || pathname.startsWith('/ivy/')
+          ? '/ivy.html'
+          : (pathname === '/' || pathname === '/design-preview' || pathname.startsWith('/agent/') ? '/index.html' : pathname));
     let decoded;
     try { decoded = decodeURIComponent(requested); } catch { sendJson(res, 400, { error: 'Malformed URL' }); return; }
     if (decoded.includes('\0') || decoded.includes('\\') || decoded.split('/').includes('..')) { sendJson(res, 403, { error: 'Forbidden' }); return; }
@@ -1919,6 +1996,59 @@ function createPortal(options = {}) {
     );
 
     return { sent: true, recipient };
+  }
+
+  async function ivyRecentOperations(sheetsToken) {
+    const activityRows = await readRows(
+      sheetsToken,
+      config.operations.spreadsheetId,
+      "'Vendor Activity'!A2:O200"
+    );
+    const exceptionRows = await readRows(
+      sheetsToken,
+      config.operations.spreadsheetId,
+      "'Exceptions'!A2:J200"
+    );
+
+    const activity = activityRows
+      .map(row => ({
+        receivedAt: String(row[0] || ''),
+        entryType: String(row[1] || ''),
+        vendor: String(row[2] || ''),
+        service: String(row[3] || ''),
+        propertyAddress: String(row[4] || ''),
+        spectoraInspectionId: String(row[5] || ''),
+        inspectionDate: String(row[6] || ''),
+        sourceEmailId: String(row[7] || ''),
+        attachmentFilename: String(row[8] || ''),
+        vendorCost: row[9] ?? '',
+        invoiceNumber: String(row[10] || ''),
+        status: String(row[11] || ''),
+        spectoraAttachmentId: String(row[12] || ''),
+        uploadedAt: String(row[13] || ''),
+        notes: String(row[14] || '')
+      }))
+      .filter(item => item.receivedAt || item.vendor || item.status)
+      .reverse();
+
+    const exceptions = exceptionRows
+      .map(row => ({
+        createdAt: String(row[0] || ''),
+        vendor: String(row[1] || ''),
+        propertyAddress: String(row[2] || ''),
+        reason: String(row[3] || ''),
+        sourceEmailId: String(row[4] || ''),
+        attachmentFilename: String(row[5] || ''),
+        candidateInspections: String(row[6] || ''),
+        status: String(row[7] || ''),
+        resolvedAt: String(row[8] || ''),
+        resolutionNotes: String(row[9] || '')
+      }))
+      .filter(item => item.status.toLowerCase() !== 'resolved')
+      .filter(item => item.createdAt || item.reason)
+      .reverse();
+
+    return { activity, exceptions };
   }
 
   async function ivyExistingKeys(sheetsToken) {
@@ -2768,6 +2898,52 @@ function createPortal(options = {}) {
           status = 200;
           return;
         }
+        if (req.method === 'GET' && pathname === '/api/admin/ivy/activity') {
+          const token = await googleSheetsAccessToken(
+            config,
+            String(req.headers['x-vercel-oidc-token'] || '')
+          );
+          const recent = await ivyRecentOperations(token);
+          sendJson(res, 200, {
+            status: 'ok',
+            activity: recent.activity.slice(0, 25),
+            exceptions: recent.exceptions.slice(0, 25)
+          });
+          status = 200;
+          return;
+        }
+
+        if (req.method === 'POST' && pathname === '/api/admin/ivy/command') {
+          const body = await readJsonBody(req, 12_000);
+          const prompt = String(body.prompt || '').trim();
+          if (!prompt || prompt.length > 800) {
+            sendJson(res, 400, { error: 'IVY commands must be between 1 and 800 characters' });
+            status = 400;
+            return;
+          }
+
+          const token = await googleSheetsAccessToken(
+            config,
+            String(req.headers['x-vercel-oidc-token'] || '')
+          );
+          const recent = await ivyRecentOperations(token);
+          const result = await askIvyOperations(
+            config,
+            prompt,
+            identity,
+            recent.activity,
+            recent.exceptions
+          );
+
+          sendJson(res, 200, {
+            status: 'ok',
+            answer: result.answer,
+            model: result.model
+          });
+          status = 200;
+          return;
+        }
+
         if (req.method === 'GET' && pathname === '/api/admin/ops/status') {
           sendJson(res, 200, {
             status: 'ok',
