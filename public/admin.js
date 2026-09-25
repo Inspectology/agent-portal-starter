@@ -1,8 +1,15 @@
 const loginCard = document.getElementById('loginCard');
 const searchCard = document.getElementById('searchCard');
-const loginForm = document.getElementById('loginForm');
+const emailLoginForm = document.getElementById('emailLoginForm');
+const fallbackLoginForm = document.getElementById('fallbackLoginForm');
+const codeForm = document.getElementById('codeForm');
+const adminEmailInput = document.getElementById('adminEmail');
+const adminCodeInput = document.getElementById('adminCode');
+const codeSentTo = document.getElementById('codeSentTo');
+const changeEmailButton = document.getElementById('changeEmail');
 const adminKeyInput = document.getElementById('adminKey');
 const loginMessage = document.getElementById('loginMessage');
+const signedInAs = document.getElementById('signedInAs');
 const searchForm = document.getElementById('searchForm');
 const agentSearch = document.getElementById('agentSearch');
 const searchMessage = document.getElementById('searchMessage');
@@ -16,6 +23,8 @@ const driveBackupResults = document.getElementById('driveBackupResults');
 const launchReadinessResults = document.getElementById('launchReadinessResults');
 
 let adminKey = sessionStorage.getItem('inspectologyAdminKey') || '';
+let pendingChallenge = sessionStorage.getItem('inspectologyAdminChallenge') || '';
+let pendingEmail = sessionStorage.getItem('inspectologyAdminEmail') || '';
 
 function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
@@ -29,19 +38,55 @@ function el(tag, attrs = {}, children = []) {
   return node;
 }
 
-async function api(path, options = {}) {
-  const headers = { ...(options.headers || {}), 'X-Admin-Key': adminKey };
+async function request(path, options = {}, includeEmergencyKey = false) {
+  const headers = { ...(options.headers || {}) };
+  if (includeEmergencyKey && adminKey) headers['X-Admin-Key'] = adminKey;
   if (options.body && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
-  const response = await fetch(path, { ...options, headers, cache: 'no-store' });
+  const response = await fetch(path, {
+    ...options,
+    headers,
+    cache: 'no-store',
+    credentials: 'same-origin'
+  });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body.detail || body.error || `Request failed: ${response.status}`);
   return body;
 }
 
-function showSearch() {
+async function api(path, options = {}) {
+  return request(path, options, true);
+}
+
+async function publicApi(path, options = {}) {
+  return request(path, options, false);
+}
+
+function showSearch(session = {}) {
   loginCard.hidden = true;
   searchCard.hidden = false;
+  const email = session.admin?.email || '';
+  const method = session.admin?.method || '';
+  if (signedInAs) {
+    signedInAs.textContent = email
+      ? `Signed in as ${email}`
+      : (method === 'emergency-key' ? 'Emergency key session' : '');
+  }
   agentSearch.focus();
+}
+
+function showLogin() {
+  searchCard.hidden = true;
+  loginCard.hidden = false;
+  if (pendingChallenge && pendingEmail) {
+    emailLoginForm.hidden = true;
+    codeForm.hidden = false;
+    codeSentTo.textContent = pendingEmail;
+    adminCodeInput.focus();
+  } else {
+    emailLoginForm.hidden = false;
+    codeForm.hidden = true;
+    adminEmailInput.focus();
+  }
 }
 
 function renderLaunchReadiness(readiness = {}) {
@@ -54,6 +99,7 @@ function renderLaunchReadiness(readiness = {}) {
     ['Google Drive', readiness.googleDrive ? 'Configured' : 'Missing', Boolean(readiness.googleDrive)],
     ['Inspectology AI', readiness.openAi ? 'Configured' : 'Missing', Boolean(readiness.openAi)],
     ['Profile update email', readiness.profileEmail ? 'Configured' : 'Missing', Boolean(readiness.profileEmail)],
+    ['Admin email login', readiness.adminEmailLogin ? 'Configured' : 'Missing', Boolean(readiness.adminEmailLogin)],
     ['Admin access', readiness.adminAccess ? 'Configured' : 'Missing', Boolean(readiness.adminAccess)]
   ];
 
@@ -69,19 +115,91 @@ function renderLaunchReadiness(readiness = {}) {
 
 async function verifyAdmin() {
   const body = await api('/api/admin/session');
-  sessionStorage.setItem('inspectologyAdminKey', adminKey);
+  if (adminKey) sessionStorage.setItem('inspectologyAdminKey', adminKey);
   renderLaunchReadiness(body.readiness || {});
-  showSearch();
+  showSearch(body);
+  return body;
 }
 
-loginForm.addEventListener('submit', async event => {
+emailLoginForm.addEventListener('submit', async event => {
   event.preventDefault();
-  loginMessage.textContent = 'Checking access...';
+  loginMessage.textContent = 'Sending sign-in code...';
+  const email = adminEmailInput.value.trim().toLowerCase();
+
+  try {
+    const body = await publicApi('/api/admin/auth/request-code', {
+      method: 'POST',
+      body: JSON.stringify({ email })
+    });
+
+    pendingChallenge = body.challenge || '';
+    pendingEmail = email;
+    sessionStorage.setItem('inspectologyAdminChallenge', pendingChallenge);
+    sessionStorage.setItem('inspectologyAdminEmail', pendingEmail);
+
+    emailLoginForm.hidden = true;
+    codeForm.hidden = false;
+    codeSentTo.textContent = email;
+    adminCodeInput.value = '';
+    loginMessage.textContent = body.message || 'Check your email for the sign-in code.';
+    adminCodeInput.focus();
+  } catch (error) {
+    loginMessage.textContent = error.message;
+  }
+});
+
+codeForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  loginMessage.textContent = 'Signing in...';
+
+  try {
+    await publicApi('/api/admin/auth/verify', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: pendingEmail,
+        code: adminCodeInput.value.trim(),
+        challenge: pendingChallenge
+      })
+    });
+
+    adminKey = '';
+    pendingChallenge = '';
+    pendingEmail = '';
+    sessionStorage.removeItem('inspectologyAdminKey');
+    sessionStorage.removeItem('inspectologyAdminChallenge');
+    sessionStorage.removeItem('inspectologyAdminEmail');
+    adminCodeInput.value = '';
+
+    await verifyAdmin();
+    loginMessage.textContent = '';
+  } catch (error) {
+    loginMessage.textContent = error.message;
+  }
+});
+
+changeEmailButton.addEventListener('click', () => {
+  pendingChallenge = '';
+  pendingEmail = '';
+  sessionStorage.removeItem('inspectologyAdminChallenge');
+  sessionStorage.removeItem('inspectologyAdminEmail');
+  codeForm.hidden = true;
+  emailLoginForm.hidden = false;
+  loginMessage.textContent = '';
+  adminCodeInput.value = '';
+  adminEmailInput.focus();
+});
+
+fallbackLoginForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  loginMessage.textContent = 'Checking emergency access...';
   adminKey = adminKeyInput.value;
+
   try {
     await verifyAdmin();
     loginMessage.textContent = '';
   } catch (error) {
+    adminKey = '';
+    sessionStorage.removeItem('inspectologyAdminKey');
     loginMessage.textContent = error.message;
   }
 });
@@ -212,18 +330,25 @@ driveBackupForm.addEventListener('submit', async event => {
   }
 });
 
-signOut.addEventListener('click', () => {
+signOut.addEventListener('click', async () => {
+  try {
+    await publicApi('/api/admin/auth/logout', { method: 'POST' });
+  } catch {}
+
   sessionStorage.removeItem('inspectologyAdminKey');
+  sessionStorage.removeItem('inspectologyAdminChallenge');
+  sessionStorage.removeItem('inspectologyAdminEmail');
   adminKey = '';
-  searchCard.hidden = true;
-  loginCard.hidden = false;
+  pendingChallenge = '';
+  pendingEmail = '';
   adminKeyInput.value = '';
+  adminCodeInput.value = '';
   loginMessage.textContent = '';
+  showLogin();
 });
 
-if (adminKey) {
-  verifyAdmin().catch(() => {
-    sessionStorage.removeItem('inspectologyAdminKey');
-    adminKey = '';
-  });
-}
+verifyAdmin().catch(() => {
+  sessionStorage.removeItem('inspectologyAdminKey');
+  adminKey = '';
+  showLogin();
+});
