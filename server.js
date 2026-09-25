@@ -6,7 +6,31 @@ const fs = require('node:fs');
 const http = require('node:http');
 const https = require('node:https');
 const path = require('node:path');
-const { readRows } = require('./ops/google-sheets-ledger');
+const {
+  appendException,
+  appendVendorActivity,
+  readRows
+} = require('./ops/google-sheets-ledger');
+const {
+  classifyDocument,
+  classifyVendor,
+  duplicateAttachment,
+  extractInvoiceData,
+  extractStreetCandidates,
+  listSpectoraAttachments,
+  resolveAttachmentType,
+  searchSpectoraInspections,
+  selectInspectionMatch,
+  uploadSpectoraAttachment
+} = require('./ops/vendor-intake');
+const {
+  downloadAttachment,
+  listReceivedAttachments,
+  receivedEmailToMessage,
+  retrieveReceivedAttachment,
+  retrieveReceivedEmail,
+  verifyResendWebhook
+} = require('./ops/resend-inbound');
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -143,7 +167,9 @@ function createConfig(env = process.env) {
         '15zah4PYh510csoKw2BkH5p88eZmhh7qFsG1AxxdimVQ'
       ).trim(),
       ivyEmail: 'ivy@inspect-ology.com',
-      ivyReplyTo: 'info@inspect-ology.com'
+      ivyReplyTo: 'info@inspect-ology.com',
+      resendWebhookSecret: String(env.OPS_RESEND_WEBHOOK_SECRET || '').trim(),
+      autoUpload: String(env.OPS_AUTO_UPLOAD || 'false').trim().toLowerCase() === 'true'
     },
     googleDrive: {
       projectNumber: String(env.GOOGLE_CLOUD_PROJECT_NUMBER || '').trim(),
@@ -457,6 +483,24 @@ function clearAdminSessionCookie() {
     'SameSite=Strict',
     'Max-Age=0'
   ].join('; ');
+}
+
+function readRawBody(req, maxBytes = 2_000_000) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let bytes = 0;
+    req.on('data', chunk => {
+      bytes += chunk.length;
+      if (bytes > maxBytes) {
+        reject(authError('Request body too large', 413));
+        req.destroy?.();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
 }
 
 function readJsonBody(req, maxBytes = 16_384) {
@@ -1818,6 +1862,344 @@ function createPortal(options = {}) {
     res.end(file.body);
   }
 
+  function inspectionAddress(inspection) {
+    const attrs = inspection?.attributes || {};
+    return String(attrs.full_address || attrs.property_address || '').trim();
+  }
+
+  function inspectionDateTime(inspection) {
+    return String(inspection?.attributes?.datetime || '').trim();
+  }
+
+  function ivyLedgerKey(sourceEmailId, filename = '') {
+    return String(sourceEmailId || '') + '|' + String(filename || '').trim().toLowerCase();
+  }
+
+  async function ivyExistingKeys(sheetsToken) {
+    const activityRows = await readRows(
+      sheetsToken,
+      config.operations.spreadsheetId,
+      "'Vendor Activity'!A2:O"
+    );
+    const exceptionRows = await readRows(
+      sheetsToken,
+      config.operations.spreadsheetId,
+      "'Exceptions'!A2:J"
+    );
+
+    const keys = new Set();
+    for (const row of activityRows) {
+      const sourceEmailId = String(row[7] || '');
+      const filename = String(row[8] || '');
+      if (sourceEmailId) keys.add(ivyLedgerKey(sourceEmailId, filename));
+    }
+    for (const row of exceptionRows) {
+      const sourceEmailId = String(row[4] || '');
+      const filename = String(row[5] || '');
+      if (sourceEmailId) keys.add(ivyLedgerKey(sourceEmailId, filename));
+    }
+    return keys;
+  }
+
+  function ivyCandidateSummary(candidates = []) {
+    return candidates.slice(0, 5).map(item => {
+      const inspection = item.inspection || {};
+      return [
+        String(inspection.id || ''),
+        inspectionAddress(inspection),
+        'score=' + String(item.score || 0)
+      ].filter(Boolean).join(' | ');
+    }).join('\n');
+  }
+
+  async function ivyLogException(sheetsToken, message, vendor, reason, options = {}) {
+    const filename = String(options.filename || message.filenames?.[0] || '');
+    await appendException(sheetsToken, config.operations, {
+      createdAt: new Date().toISOString(),
+      vendor: vendor?.company || '',
+      propertyAddress: options.propertyAddress || '',
+      reason,
+      sourceEmailId: message.sourceEmailId,
+      attachmentFilename: filename,
+      candidateInspections: ivyCandidateSummary(options.candidates || []),
+      status: 'Open'
+    });
+  }
+
+  async function processIvyReceivedEmail(req, event) {
+    const emailId = String(event?.data?.email_id || '').trim();
+    if (!emailId) throw authError('Resend received email ID is missing', 400);
+    if (!config.profileNotifications.resendApiKey) {
+      throw authError('Resend API is not configured', 503);
+    }
+
+    const [email, attachments] = await Promise.all([
+      retrieveReceivedEmail(config.profileNotifications.resendApiKey, emailId),
+      listReceivedAttachments(config.profileNotifications.resendApiKey, emailId)
+    ]);
+    const message = receivedEmailToMessage(event, email, attachments);
+    const sheetsToken = await googleSheetsAccessToken(
+      config,
+      String(req.headers['x-vercel-oidc-token'] || '')
+    );
+    const existingKeys = await ivyExistingKeys(sheetsToken);
+
+    const classified = classifyVendor(message);
+    const defaultFilename = message.filenames?.[0] || '';
+    const defaultKey = ivyLedgerKey(message.sourceEmailId, defaultFilename);
+
+    if (!classified.vendor) {
+      if (!existingKeys.has(defaultKey)) {
+        await ivyLogException(
+          sheetsToken,
+          message,
+          null,
+          classified.ambiguous ? 'Vendor classification is ambiguous' : 'Vendor is not recognized'
+        );
+      }
+      return { action: 'review', reason: 'Vendor not confidently recognized' };
+    }
+
+    const vendor = classified.vendor;
+    const document = classifyDocument(message, vendor);
+
+    if (document.type === 'ignore') {
+      if (!existingKeys.has(defaultKey)) {
+        await appendVendorActivity(sheetsToken, config.operations, {
+          receivedAt: message.receivedAt,
+          entryType: 'Ignored',
+          vendor: vendor.company,
+          service: vendor.service,
+          sourceEmailId: message.sourceEmailId,
+          attachmentFilename: defaultFilename,
+          status: 'Ignored',
+          notes: document.reason
+        });
+      }
+      return { action: 'ignore', vendor: vendor.company, reason: document.reason };
+    }
+
+    if (document.type === 'invoice') {
+      if (!existingKeys.has(defaultKey)) {
+        const invoice = extractInvoiceData([message.subject, message.body].join('\n'));
+        const street = extractStreetCandidates({
+          subject: invoice.project,
+          body: invoice.project,
+          filenames: []
+        })[0]?.raw || invoice.project || '';
+
+        await appendVendorActivity(sheetsToken, config.operations, {
+          receivedAt: message.receivedAt,
+          entryType: 'Invoice',
+          vendor: vendor.company,
+          service: vendor.service,
+          propertyAddress: street,
+          sourceEmailId: message.sourceEmailId,
+          attachmentFilename: defaultFilename,
+          vendorCost: invoice.amount,
+          invoiceNumber: invoice.invoiceNumber,
+          status: 'Received',
+          notes: invoice.project
+            ? 'Vendor invoice received.'
+            : 'Vendor invoice received. Property matching still needed.'
+        });
+      }
+      return { action: 'ledger', vendor: vendor.company, documentType: 'invoice' };
+    }
+
+    if (document.type !== 'report') {
+      if (!existingKeys.has(defaultKey)) {
+        await ivyLogException(sheetsToken, message, vendor, document.reason);
+      }
+      return { action: 'review', vendor: vendor.company, reason: document.reason };
+    }
+
+    const streets = extractStreetCandidates(message);
+    if (!streets.length) {
+      if (!existingKeys.has(defaultKey)) {
+        await ivyLogException(
+          sheetsToken,
+          message,
+          vendor,
+          'No street address found in the report email or attachment name'
+        );
+      }
+      return { action: 'review', vendor: vendor.company, reason: 'No address found' };
+    }
+
+    const inspectionSearch = await searchSpectoraInspections(config.apiKey, streets[0].raw);
+    const inspections = Array.isArray(inspectionSearch?.data) ? inspectionSearch.data : [];
+    const match = selectInspectionMatch({ inspections, message, vendor });
+
+    if (!match.matched) {
+      if (!existingKeys.has(defaultKey)) {
+        await ivyLogException(
+          sheetsToken,
+          message,
+          vendor,
+          match.reason,
+          { propertyAddress: streets[0].raw, candidates: match.candidates }
+        );
+      }
+      return { action: 'review', vendor: vendor.company, reason: match.reason };
+    }
+
+    const inspection = match.inspection;
+    const existingAttachmentResponse = await listSpectoraAttachments(config.apiKey, inspection.id);
+    const existingAttachments = Array.isArray(existingAttachmentResponse?.data)
+      ? existingAttachmentResponse.data
+      : [];
+    const attachmentType = resolveAttachmentType(vendor, process.env);
+
+    const reportFiles = message.attachments.filter(item =>
+      /\.pdf$/i.test(item.filename || '') &&
+      !/^well yield disclaimer\.pdf$/i.test(item.filename || '')
+    );
+
+    if (!reportFiles.length) {
+      if (!existingKeys.has(defaultKey)) {
+        await ivyLogException(
+          sheetsToken,
+          message,
+          vendor,
+          'No supported PDF report attachment was found',
+          { propertyAddress: inspectionAddress(inspection) || streets[0].raw }
+        );
+      }
+      return { action: 'review', vendor: vendor.company, reason: 'No PDF report found' };
+    }
+
+    const results = [];
+    for (const file of reportFiles) {
+      const key = ivyLedgerKey(message.sourceEmailId, file.filename);
+      if (existingKeys.has(key)) {
+        results.push({ filename: file.filename, action: 'already_processed' });
+        continue;
+      }
+
+      const duplicate = duplicateAttachment(existingAttachments, file.filename);
+      if (duplicate) {
+        await appendVendorActivity(sheetsToken, config.operations, {
+          receivedAt: message.receivedAt,
+          entryType: 'Report',
+          vendor: vendor.company,
+          service: vendor.service,
+          propertyAddress: inspectionAddress(inspection) || streets[0].raw,
+          spectoraInspectionId: String(inspection.id || ''),
+          inspectionDate: inspectionDateTime(inspection),
+          sourceEmailId: message.sourceEmailId,
+          attachmentFilename: file.filename,
+          status: 'Duplicate',
+          notes: 'Same filename is already attached in Spectora.'
+        });
+        results.push({ filename: file.filename, action: 'duplicate' });
+        continue;
+      }
+
+      if (!config.operations.autoUpload) {
+        await appendVendorActivity(sheetsToken, config.operations, {
+          receivedAt: message.receivedAt,
+          entryType: 'Report',
+          vendor: vendor.company,
+          service: vendor.service,
+          propertyAddress: inspectionAddress(inspection) || streets[0].raw,
+          spectoraInspectionId: String(inspection.id || ''),
+          inspectionDate: inspectionDateTime(inspection),
+          sourceEmailId: message.sourceEmailId,
+          attachmentFilename: file.filename,
+          status: 'Matched',
+          notes: attachmentType
+            ? 'Dry run: confidently matched. Automatic upload is disabled.'
+            : 'Dry run: confidently matched. Spectora attachment type still needs configuration.'
+        });
+        results.push({ filename: file.filename, action: 'matched_dry_run' });
+        continue;
+      }
+
+      if (!attachmentType) {
+        await ivyLogException(
+          sheetsToken,
+          message,
+          vendor,
+          'Spectora attachment type is not configured for this vendor',
+          {
+            filename: file.filename,
+            propertyAddress: inspectionAddress(inspection) || streets[0].raw
+          }
+        );
+        results.push({ filename: file.filename, action: 'review' });
+        continue;
+      }
+
+      let attachment = file;
+      if (!attachment.downloadUrl && attachment.id) {
+        attachment = {
+          ...attachment,
+          ...require('./ops/resend-inbound').attachmentMeta(
+            await retrieveReceivedAttachment(
+              config.profileNotifications.resendApiKey,
+              emailId,
+              attachment.id
+            )
+          )
+        };
+      }
+      if (!attachment.downloadUrl) {
+        await ivyLogException(
+          sheetsToken,
+          message,
+          vendor,
+          'Resend did not provide a downloadable attachment URL',
+          {
+            filename: file.filename,
+            propertyAddress: inspectionAddress(inspection) || streets[0].raw
+          }
+        );
+        results.push({ filename: file.filename, action: 'review' });
+        continue;
+      }
+
+      const fileBuffer = await downloadAttachment(attachment.downloadUrl);
+      const upload = await uploadSpectoraAttachment(config.apiKey, {
+        inspectionId: inspection.id,
+        file: fileBuffer,
+        filename: file.filename,
+        mimeType: file.contentType || 'application/pdf',
+        name: vendor.company + ' Report',
+        description: vendor.company + ' third-party report received by Inspectology',
+        attachmentType,
+        report: true,
+        internalOnly: false
+      });
+      const attachmentId = String(upload?.data?.id || upload?.id || '');
+
+      await appendVendorActivity(sheetsToken, config.operations, {
+        receivedAt: message.receivedAt,
+        entryType: 'Report',
+        vendor: vendor.company,
+        service: vendor.service,
+        propertyAddress: inspectionAddress(inspection) || streets[0].raw,
+        spectoraInspectionId: String(inspection.id || ''),
+        inspectionDate: inspectionDateTime(inspection),
+        sourceEmailId: message.sourceEmailId,
+        attachmentFilename: file.filename,
+        status: 'Uploaded',
+        spectoraAttachmentId: attachmentId,
+        uploadedAt: new Date().toISOString(),
+        notes: 'Uploaded automatically by IVY.'
+      });
+      results.push({ filename: file.filename, action: 'uploaded', attachmentId });
+    }
+
+    return {
+      action: config.operations.autoUpload ? 'processed' : 'dry_run',
+      vendor: vendor.company,
+      inspectionId: String(inspection.id || ''),
+      propertyAddress: inspectionAddress(inspection) || streets[0].raw,
+      results
+    };
+  }
+
   async function handleRequest(req, res) {
     const startedAt = nowMs();
     let pathname = '<malformed>';
@@ -1829,6 +2211,52 @@ function createPortal(options = {}) {
       if (req.method === 'GET' && pathname === '/api/health') {
         sendJson(res, 200, { status: 'ok', service: 'spectora-agent-portal', mode: config.mode }); status = 200; return;
       }
+      if (req.method === 'POST' && pathname === '/api/ops/resend-webhook') {
+        if (!config.operations.resendWebhookSecret) {
+          sendJson(res, 503, { error: 'IVY inbound webhook is not configured' });
+          status = 503;
+          return;
+        }
+
+        const rawBody = await readRawBody(req, 2_000_000);
+        try {
+          verifyResendWebhook({
+            rawBody,
+            headers: req.headers,
+            secret: config.operations.resendWebhookSecret,
+            nowMs: nowMs()
+          });
+        } catch {
+          sendJson(res, 401, { error: 'Invalid webhook signature' });
+          status = 401;
+          return;
+        }
+
+        let event;
+        try {
+          event = JSON.parse(rawBody || '{}');
+        } catch {
+          sendJson(res, 400, { error: 'Malformed webhook JSON' });
+          status = 400;
+          return;
+        }
+
+        if (event.type !== 'email.received') {
+          sendJson(res, 200, { status: 'ignored', eventType: event.type || '' });
+          status = 200;
+          return;
+        }
+
+        const result = await processIvyReceivedEmail(req, event);
+        sendJson(res, 200, {
+          status: 'ok',
+          mode: config.operations.autoUpload ? 'auto-upload' : 'dry-run',
+          result
+        });
+        status = 200;
+        return;
+      }
+
       if (req.method === 'GET' && pathname === '/api/design-preview') {
         const targetEnv = String(process.env.VERCEL_TARGET_ENV || process.env.VERCEL_ENV || '').toLowerCase();
         if (targetEnv === 'production') {
@@ -2281,6 +2709,21 @@ function createPortal(options = {}) {
           status = 200;
           return;
         }
+        if (req.method === 'GET' && pathname === '/api/admin/ops/status') {
+          sendJson(res, 200, {
+            status: 'ok',
+            ivy: {
+              email: config.operations.ivyEmail,
+              spreadsheetConfigured: Boolean(config.operations.spreadsheetId),
+              inboundWebhookConfigured: Boolean(config.operations.resendWebhookSecret),
+              resendApiConfigured: Boolean(config.profileNotifications.resendApiKey),
+              autoUpload: config.operations.autoUpload
+            }
+          });
+          status = 200;
+          return;
+        }
+
         if (req.method === 'GET' && pathname === '/api/admin/ops/sheet-test') {
           const token = await googleSheetsAccessToken(
             config,
