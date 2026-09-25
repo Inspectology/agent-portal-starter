@@ -166,7 +166,7 @@ function classifyDocument(message = {}, vendor = null) {
   }
 
   if (vendor?.key === 'termite' && filenames.some(name => /\.pdf$/i.test(name))) {
-    return { type: 'report', reason: 'Lynn Pest termite report PDF' };
+    return { type: 'report', reason: 'Lynn Pest termite report PDF', displayName: 'Termite Report' };
   }
 
   if (
@@ -174,7 +174,7 @@ function classifyDocument(message = {}, vendor = null) {
     (/chimney inspection/i.test(combined) || /chim insp/i.test(combined)) &&
     filenames.some(name => /\.pdf$/i.test(name))
   ) {
-    return { type: 'report', reason: 'Cambro chimney report PDF' };
+    return { type: 'report', reason: 'Cambro chimney report PDF', displayName: 'Chimney Report' };
   }
 
   if (
@@ -187,15 +187,25 @@ function classifyDocument(message = {}, vendor = null) {
 
   if (
     vendor?.key === 'well_water' &&
+    /well yield/i.test(combined) &&
+    filenames.some(name => /\.pdf$/i.test(name) && !/^well yield disclaimer\.pdf$/i.test(name))
+  ) {
+    return { type: 'report', reason: 'Atlantic Blue well yield report PDF', displayName: 'Well Yield Report' };
+  }
+
+  if (
+    vendor?.key === 'well_water' &&
     (
       /water test results/i.test(combined) ||
+      /water testing report/i.test(combined) ||
+      /water quality/i.test(combined) ||
       /failing bacteria/i.test(combined) ||
       /failing bac/i.test(combined) ||
       /lead results/i.test(combined)
     ) &&
     filenames.some(name => /\.pdf$/i.test(name))
   ) {
-    return { type: 'report', reason: 'Atlantic Blue water results PDF' };
+    return { type: 'report', reason: 'Atlantic Blue water results PDF', displayName: 'Water Quality Report' };
   }
 
   return { type: 'review', reason: 'Attachment type is not confidently classified' };
@@ -469,7 +479,7 @@ function createVendorIntakePlan({
     attachmentType,
     report: true,
     internalOnly: false,
-    displayName: `${classified.vendor.company} Report`,
+    displayName: document.displayName || `${classified.vendor.company} Report`,
     description: `${classified.vendor.company} third-party report received by Inspectology`,
     matchScore: match.score,
     matchReasons: match.reasons
