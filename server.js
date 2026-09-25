@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const https = require('node:https');
 const path = require('node:path');
+const { readRows } = require('./ops/google-sheets-ledger');
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -135,6 +136,14 @@ function createConfig(env = process.env) {
       resendApiKey: String(env.RESEND_API_KEY || '').trim(),
       to: String(env.PROFILE_CHANGE_EMAIL_TO || '').trim(),
       from: String(env.PROFILE_CHANGE_EMAIL_FROM || '').trim()
+    },
+    operations: {
+      spreadsheetId: String(
+        env.OPS_SPREADSHEET_ID ||
+        '15zah4PYh510csoKw2BkH5p88eZmhh7qFsG1AxxdimVQ'
+      ).trim(),
+      ivyEmail: 'ivy@inspect-ology.com',
+      ivyReplyTo: 'info@inspect-ology.com'
     },
     googleDrive: {
       projectNumber: String(env.GOOGLE_CLOUD_PROJECT_NUMBER || '').trim(),
@@ -528,7 +537,9 @@ function requestJson(url, options = {}, body = null, maxBytes = 2_000_000) {
   });
 }
 
-async function googleDriveAccessToken(config, runtimeOidcToken = '') {
+async function googleWorkspaceAccessToken(config, runtimeOidcToken = '', scopes = [
+  'https://www.googleapis.com/auth/drive.readonly'
+]) {
   const drive = config.googleDrive || {};
   const oidcToken = String(runtimeOidcToken || process.env.VERCEL_OIDC_TOKEN || '').trim();
 
@@ -577,7 +588,7 @@ async function googleDriveAccessToken(config, runtimeOidcToken = '') {
   }
 
   const impersonationBody = JSON.stringify({
-    scope: ['https://www.googleapis.com/auth/drive.readonly'],
+    scope: scopes,
     lifetime: '3600s'
   });
   const serviceAccount = encodeURIComponent(drive.serviceAccountEmail);
@@ -609,6 +620,18 @@ async function googleDriveAccessToken(config, runtimeOidcToken = '') {
   }
 
   return impersonation.json.accessToken;
+}
+
+function googleDriveAccessToken(config, runtimeOidcToken = '') {
+  return googleWorkspaceAccessToken(config, runtimeOidcToken, [
+    'https://www.googleapis.com/auth/drive.readonly'
+  ]);
+}
+
+function googleSheetsAccessToken(config, runtimeOidcToken = '') {
+  return googleWorkspaceAccessToken(config, runtimeOidcToken, [
+    'https://www.googleapis.com/auth/spreadsheets'
+  ]);
 }
 
 async function googleDriveListChildren(accessToken, parentId) {
@@ -2258,6 +2281,26 @@ function createPortal(options = {}) {
           status = 200;
           return;
         }
+        if (req.method === 'GET' && pathname === '/api/admin/ops/sheet-test') {
+          const token = await googleSheetsAccessToken(
+            config,
+            String(req.headers['x-vercel-oidc-token'] || '')
+          );
+          const rows = await readRows(
+            token,
+            config.operations.spreadsheetId,
+            "'Vendors'!A1:F20"
+          );
+          sendJson(res, 200, {
+            status: 'ok',
+            spreadsheetId: config.operations.spreadsheetId,
+            vendorRows: Math.max(0, rows.length - 1),
+            header: rows[0] || []
+          });
+          status = 200;
+          return;
+        }
+
         if (req.method === 'POST' && pathname === '/api/admin/invite') {
           const body = await readJsonBody(req);
           const connectionId = validatedPositiveDecimalId(body.connectionId, 'Spectora connection ID');
