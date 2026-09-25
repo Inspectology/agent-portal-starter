@@ -2138,7 +2138,7 @@ function createPortal(options = {}) {
           ...attachment,
           ...require('./ops/resend-inbound').attachmentMeta(
             await retrieveReceivedAttachment(
-              config.profileNotifications.resendApiKey,
+              config.operations.resendApiKey,
               emailId,
               attachment.id
             )
