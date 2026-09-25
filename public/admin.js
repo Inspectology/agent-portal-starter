@@ -99,6 +99,7 @@ function renderLaunchReadiness(readiness = {}) {
     ['Google Drive', readiness.googleDrive ? 'Configured' : 'Missing', Boolean(readiness.googleDrive)],
     ['Inspectology AI', readiness.openAi ? 'Configured' : 'Missing', Boolean(readiness.openAi)],
     ['Profile update email', readiness.profileEmail ? 'Configured' : 'Missing', Boolean(readiness.profileEmail)],
+    ['Admin email login', readiness.adminEmailLogin ? 'Configured' : 'Missing', Boolean(readiness.adminEmailLogin)],
     ['Admin access', readiness.adminAccess ? 'Configured' : 'Missing', Boolean(readiness.adminAccess)]
   ];
 
