@@ -61,6 +61,38 @@ function fmtDate(value) {
   return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(date);
 }
 
+function fmtAppointmentTime(value) {
+  const date = parseDate(value);
+  if (!date) return '';
+  return new Intl.DateTimeFormat('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
+  }).format(date);
+}
+
+function inspectionDateTime(inspection) {
+  return parseDate(inspection?.datetime || inspection?.date);
+}
+
+function isPastInspection(inspection) {
+  if (inspection?.canceled) return false;
+  const date = inspectionDateTime(inspection);
+  return !date || date.getTime() <= Date.now();
+}
+
+function findNextInspection(inspections) {
+  return (inspections || [])
+    .filter(inspection => {
+      if (inspection?.canceled) return false;
+      const date = inspectionDateTime(inspection);
+      return date && date.getTime() > Date.now();
+    })
+    .sort((a, b) => inspectionDateTime(a).getTime() - inspectionDateTime(b).getTime())[0] || null;
+}
+
 function monthDay(value) {
   const date = parseDate(value);
   if (!date) return { month: '', day: '' };
@@ -87,6 +119,19 @@ function getConnectionId() {
   return auth.connectionId || 'demo-platinum-partner';
 }
 
+async function portalApi(path, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  if (auth.grant) headers.Authorization = `Bearer ${auth.grant}`;
+  if (options.body && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
+
+  const response = await fetch(path, { ...options, headers, cache: 'no-store' });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(body.detail || body.error || `Request failed: ${response.status}`);
+  }
+  return body;
+}
+
 function profileKey() {
   return `agentProfile:${getConnectionId()}`;
 }
@@ -99,8 +144,129 @@ function getProfileOverrides() {
   }
 }
 
+function photoKey() {
+  return `agentPhoto:${getConnectionId()}`;
+}
+
+function getSavedPhoto() {
+  try {
+    return localStorage.getItem(photoKey()) || '';
+  } catch {
+    return '';
+  }
+}
+
 function mergedAgent(agent) {
-  return { ...agent, ...getProfileOverrides() };
+  const savedPhoto = getSavedPhoto();
+  return {
+    ...agent,
+    ...getProfileOverrides(),
+    photoUrl: savedPhoto || agent.photoUrl
+  };
+}
+
+function resizeProfilePhoto(file, size = 360) {
+  return new Promise((resolve, reject) => {
+    if (!file || !/^image\//i.test(file.type || '')) {
+      reject(new Error('Please choose an image file.'));
+      return;
+    }
+    if (file.size > 8_000_000) {
+      reject(new Error('Please choose a photo smaller than 8 MB.'));
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('The photo could not be read.'));
+    reader.onload = () => {
+      const image = new Image();
+      image.onerror = () => reject(new Error('The photo could not be opened.'));
+      image.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const context = canvas.getContext('2d');
+        if (!context) {
+          reject(new Error('Photo editing is not supported on this device.'));
+          return;
+        }
+
+        const sourceSize = Math.min(image.naturalWidth, image.naturalHeight);
+        const sx = (image.naturalWidth - sourceSize) / 2;
+        const sy = (image.naturalHeight - sourceSize) / 2;
+        context.drawImage(image, sx, sy, sourceSize, sourceSize, 0, 0, size, size);
+        resolve(canvas.toDataURL('image/jpeg', 0.84));
+      };
+      image.src = String(reader.result || '');
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function renderProfilePhotoControl(agent) {
+  const hasCustomPhoto = Boolean(getSavedPhoto());
+  const input = el('input', {
+    class: 'profile-photo-input',
+    type: 'file',
+    accept: 'image/*',
+    'aria-label': hasCustomPhoto ? 'Change profile photo' : 'Add profile photo'
+  });
+
+  const status = el('span', {
+    class: 'profile-photo-reminder',
+    text: hasCustomPhoto ? 'Change photo' : 'Add profile photo'
+  });
+
+  const triggerPicker = () => input.click();
+
+  input.addEventListener('change', async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+
+    status.textContent = 'Updating photo…';
+
+    try {
+      const photo = await resizeProfilePhoto(file);
+      localStorage.setItem(photoKey(), photo);
+      currentData = {
+        ...currentData,
+        agent: {
+          ...currentData.agent,
+          photoUrl: photo
+        }
+      };
+      renderDashboard(currentData);
+    } catch (error) {
+      status.textContent = error.message;
+      input.value = '';
+    }
+  });
+
+  return el('div', { class: 'profile-photo-control' }, [
+    el('button', {
+      class: 'profile-photo-button',
+      type: 'button',
+      'aria-label': hasCustomPhoto ? 'Change profile photo' : 'Add profile photo',
+      onclick: triggerPicker
+    }, [
+      el('img', {
+        class: 'avatar',
+        src: agent.photoUrl || '/assets/mock-agent.svg',
+        alt: `${agent.firstName} ${agent.lastName}`
+      }),
+      el('span', {
+        class: 'profile-photo-badge',
+        text: hasCustomPhoto ? '✎' : '+',
+        'aria-hidden': 'true'
+      })
+    ]),
+    input,
+    el('button', {
+      class: `profile-photo-reminder-button${hasCustomPhoto ? ' profile-photo-reminder-button-subtle' : ''}`,
+      type: 'button',
+      onclick: triggerPicker
+    }, [status])
+  ]);
 }
 
 function applyBrand() {
@@ -133,7 +299,31 @@ function field(label, name, value, options = {}) {
   ]);
 }
 
+function isDashboardInstalled() {
+  return window.matchMedia('(display-mode: standalone)').matches ||
+    window.navigator.standalone === true;
+}
+
+function renderInstallPromptCard() {
+  if (isDashboardInstalled()) return null;
+
+  return el('section', { class: 'top-install-card' }, [
+    el('div', { class: 'top-install-copy' }, [
+      el('strong', { text: 'Add Inspectology to your phone' }),
+      el('span', { text: 'Open your Agent Dashboard with one tap.' })
+    ]),
+    el('button', {
+      class: 'top-install-button',
+      type: 'button',
+      text: 'Install App',
+      onclick: installApp
+    })
+  ]);
+}
+
 function installApp() {
+  if (isDashboardInstalled()) return;
+
   if (deferredInstallPrompt) {
     deferredInstallPrompt.prompt();
     deferredInstallPrompt.userChoice.finally(() => {
@@ -151,9 +341,11 @@ function installApp() {
   }
 }
 
-function renderProfileSection(agent) {
-  const saveMessage = el('p', { class: 'save-message', 'aria-live': 'polite' });
-  const form = el('form', { class: 'profile-form' }, [
+function openAgentInfo(agent) {
+  document.querySelector('.info-overlay')?.remove();
+
+  const saveMessage = el('p', { class: 'save-message info-save-message', 'aria-live': 'polite' });
+  const form = el('form', { class: 'profile-form info-profile-form' }, [
     el('div', { class: 'form-grid' }, [
       field('First name', 'firstName', agent.firstName, { autocomplete: 'given-name' }),
       field('Last name', 'lastName', agent.lastName, { autocomplete: 'family-name' }),
@@ -165,27 +357,832 @@ function renderProfileSection(agent) {
     ]),
     el('p', {
       class: 'profile-note',
-      text: 'Profile changes are saved in this Agent Dashboard. Spectora currently blocks agent email updates through its API.'
+      text: 'Update anything that has changed. Inspectology will be notified so we can keep your Spectora information current.'
     }),
-    el('button', { class: 'primary-button', type: 'submit', text: 'Save Profile' }),
+    el('button', { class: 'primary-button', type: 'submit', text: 'Update My Information' }),
     saveMessage
   ]);
 
-  form.addEventListener('submit', event => {
+  const closePanel = () => {
+    overlay.classList.remove('info-overlay-open');
+    setTimeout(() => overlay.remove(), 160);
+    document.removeEventListener('keydown', onKeyDown);
+  };
+
+  const onKeyDown = event => {
+    if (event.key === 'Escape') closePanel();
+  };
+
+  form.addEventListener('submit', async event => {
     event.preventDefault();
     const values = Object.fromEntries(new FormData(form).entries());
+    saveMessage.textContent = 'Saving changes…';
+
+    let notificationSent = false;
+    let notificationPending = false;
+
+    try {
+      if (currentData?.meta?.mode === 'design-preview') {
+        notificationSent = true;
+      } else {
+        const body = await portalApi(
+          `/api/agent/${encodeURIComponent(getConnectionId())}/profile-change`,
+          {
+            method: 'POST',
+            body: JSON.stringify({ profile: values })
+          }
+        );
+        notificationSent = Boolean(body.notificationSent);
+        notificationPending = body.notificationStatus === 'not_configured';
+      }
+    } catch {
+      notificationPending = true;
+    }
+
     localStorage.setItem(profileKey(), JSON.stringify(values));
-    saveMessage.textContent = 'Profile saved on this device.';
     currentData = { ...currentData, agent: { ...currentData.agent, ...values } };
-    setTimeout(() => renderDashboard(currentData), 550);
+
+    saveMessage.textContent = notificationSent
+      ? 'Saved. Inspectology was notified of your changes.'
+      : (notificationPending
+          ? 'Saved. Inspectology notification is pending setup.'
+          : 'Saved.');
+
+    setTimeout(() => {
+      closePanel();
+      renderDashboard(currentData);
+    }, 850);
   });
 
-  return el('section', { class: 'section', id: 'profile' }, [
-    el('div', { class: 'section-heading' }, [
-      el('h2', { text: 'My Profile' }),
-      el('span', { class: 'section-kicker', text: 'Editable' })
+  const panel = el('section', {
+    class: 'info-sheet',
+    role: 'dialog',
+    'aria-modal': 'true',
+    'aria-label': 'My Info'
+  }, [
+    el('div', { class: 'info-sheet-header' }, [
+      el('div', {}, [
+        el('span', { class: 'info-kicker', text: 'Agent Profile' }),
+        el('h2', { text: 'My Info' }),
+        el('p', { text: 'Keep your contact information current with Inspectology.' })
+      ]),
+      el('button', {
+        class: 'info-close',
+        type: 'button',
+        text: '×',
+        'aria-label': 'Close My Info',
+        onclick: closePanel
+      })
     ]),
-    el('div', { class: 'profile-card' }, [form])
+    el('div', { class: 'info-sheet-body' }, [form])
+  ]);
+
+  const overlay = el('div', {
+    class: 'info-overlay',
+    onclick: event => {
+      if (event.target === overlay) closePanel();
+    }
+  }, [panel]);
+
+  document.body.append(overlay);
+  document.addEventListener('keydown', onKeyDown);
+  requestAnimationFrame(() => overlay.classList.add('info-overlay-open'));
+}
+
+function renderMyInfoButton(agent) {
+  return el('button', {
+    class: 'hero-info-button',
+    type: 'button',
+    onclick: () => openAgentInfo(agent)
+  }, [
+    el('span', { text: 'My Info' }),
+    el('span', { class: 'hero-info-arrow', text: '›', 'aria-hidden': 'true' })
+  ]);
+}
+
+function aiMessage(role, message) {
+  return el('div', { class: `ai-message ai-message-${role}` }, [
+    el('div', { class: 'ai-message-label', text: role === 'user' ? 'You' : 'Inspectology AI' }),
+    el('div', { class: 'ai-message-text', text: message })
+  ]);
+}
+
+function openInspectologyAi(inspection) {
+  document.querySelector('.ai-overlay')?.remove();
+
+  const history = [];
+  const status = el('div', { class: 'ai-report-status ai-report-checking' }, [
+    el('span', { class: 'ai-status-dot', 'aria-hidden': 'true' }),
+    el('span', { text: 'Checking inspection report…' })
+  ]);
+  const messages = el('div', { class: 'ai-messages', 'aria-live': 'polite' });
+  const input = el('input', {
+    class: 'ai-question-input',
+    type: 'text',
+    placeholder: 'Ask about this inspection…',
+    maxlength: '1200',
+    autocomplete: 'off',
+    disabled: true
+  });
+  const sendButton = el('button', {
+    class: 'ai-send-button',
+    type: 'submit',
+    text: 'Ask',
+    disabled: true
+  });
+
+  const form = el('form', { class: 'ai-question-form' }, [input, sendButton]);
+
+  const closePanel = () => {
+    overlay.classList.remove('ai-overlay-open');
+    setTimeout(() => overlay.remove(), 160);
+    document.removeEventListener('keydown', onKeyDown);
+  };
+
+  const onKeyDown = event => {
+    if (event.key === 'Escape') closePanel();
+  };
+
+  const quickPrompts = [
+    'Summarize the major concerns',
+    'What did the report say about the roof?',
+    'Show me the electrical concerns',
+    'Summarize HVAC ages and concerns',
+    'What should I discuss with my buyer?'
+  ];
+
+  const quickPromptWrap = el('div', { class: 'ai-quick-prompts' });
+  for (const prompt of quickPrompts) {
+    quickPromptWrap.append(
+      el('button', {
+        class: 'ai-prompt-chip',
+        type: 'button',
+        text: prompt,
+        onclick: () => {
+          if (input.disabled) return;
+          input.value = prompt;
+          form.requestSubmit();
+        }
+      })
+    );
+  }
+
+  const panel = el('section', {
+    class: 'ai-sheet',
+    role: 'dialog',
+    'aria-modal': 'true',
+    'aria-label': 'Ask Inspectology AI'
+  }, [
+    el('div', { class: 'ai-sheet-header' }, [
+      el('div', {}, [
+        el('div', { class: 'ai-brand-row' }, [
+          el('span', { class: 'ai-spark', text: '✦', 'aria-hidden': 'true' }),
+          el('span', { class: 'ai-brand-name', text: 'Ask Inspectology AI' })
+        ]),
+        el('h2', { class: 'ai-property-title', text: inspection.location || inspection.address || 'Inspection report' }),
+        el('p', { class: 'ai-property-meta', text: [fmtDate(inspection.date), inspection.inspector].filter(Boolean).join(' • ') })
+      ]),
+      el('button', {
+        class: 'ai-close',
+        type: 'button',
+        text: '×',
+        'aria-label': 'Close Inspectology AI',
+        onclick: closePanel
+      })
+    ]),
+    status,
+    (inspection.spectoraUrl || currentData?.meta?.mode === 'design-preview')
+      ? el('button', {
+          class: 'ai-open-spectora',
+          type: 'button',
+          onclick: () => openSpectoraInspection(inspection)
+        }, [
+          el('span', { text: 'Open in Spectora' }),
+          el('span', { text: '↗', 'aria-hidden': 'true' })
+        ])
+      : document.createTextNode(''),
+    el('p', {
+      class: 'ai-intro',
+      text: 'Ask questions about this inspection. Answers are grounded in the selected Inspectology report and should be read alongside the full report.'
+    }),
+    quickPromptWrap,
+    messages,
+    el('div', { class: 'ai-composer' }, [
+      form,
+      el('p', {
+        class: 'ai-disclaimer',
+        text: 'Inspectology AI explains report content. It does not replace the inspector, the full report, or professional advice.'
+      })
+    ])
+  ]);
+
+  const overlay = el('div', {
+    class: 'ai-overlay',
+    onclick: event => {
+      if (event.target === overlay) closePanel();
+    }
+  }, [panel]);
+
+  document.body.append(overlay);
+  document.addEventListener('keydown', onKeyDown);
+  requestAnimationFrame(() => overlay.classList.add('ai-overlay-open'));
+
+  messages.append(
+    aiMessage(
+      'assistant',
+      'I can help you understand this inspection report. Try one of the questions above or ask me about a specific system, concern, or recommendation.'
+    )
+  );
+
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const question = input.value.trim();
+    if (!question || input.disabled) return;
+
+    const priorHistory = history.slice(-6);
+    history.push({ role: 'user', text: question });
+    messages.append(aiMessage('user', question));
+    input.value = '';
+    input.disabled = true;
+    sendButton.disabled = true;
+
+    const thinking = aiMessage('assistant', 'Reviewing the inspection report…');
+    thinking.classList.add('ai-thinking');
+    messages.append(thinking);
+    messages.scrollTop = messages.scrollHeight;
+
+    try {
+      let answer;
+      if (currentData?.meta?.mode === 'design-preview') {
+        await new Promise(resolve => setTimeout(resolve, 550));
+        answer = 'Design preview: the live version will answer from this inspection’s full Inspectology PDF and cite the exact report section when available. This preview is only showing the dashboard experience.';
+      } else {
+        const body = await portalApi(`/api/agent/${encodeURIComponent(getConnectionId())}/ask-report`, {
+          method: 'POST',
+          body: JSON.stringify({
+            inspectionId: inspection.id,
+            question,
+            history: priorHistory
+          })
+        });
+        answer = body.answer || 'No answer was returned.';
+      }
+      thinking.remove();
+      history.push({ role: 'assistant', text: answer });
+      messages.append(aiMessage('assistant', answer));
+    } catch (error) {
+      thinking.remove();
+      messages.append(
+        aiMessage('assistant', `I couldn't answer that yet. ${error.message}`)
+      );
+    } finally {
+      input.disabled = false;
+      sendButton.disabled = false;
+      input.focus();
+      messages.scrollTop = messages.scrollHeight;
+    }
+  });
+
+  if (currentData?.meta?.mode === 'design-preview') {
+    status.className = 'ai-report-status ai-report-ready';
+    status.replaceChildren(
+      el('span', { class: 'ai-status-dot', 'aria-hidden': 'true' }),
+      el('span', { text: 'Full inspection report connected' })
+    );
+    input.disabled = false;
+    sendButton.disabled = false;
+  } else {
+    portalApi(
+      `/api/agent/${encodeURIComponent(getConnectionId())}/report-status?inspectionId=${encodeURIComponent(inspection.id || '')}`
+    ).then(body => {
+      status.className = `ai-report-status ${body.available ? 'ai-report-ready' : 'ai-report-waiting'}`;
+      status.replaceChildren(
+        el('span', { class: 'ai-status-dot', 'aria-hidden': 'true' }),
+        el('span', {
+          text: body.available
+            ? 'Full inspection report connected'
+            : 'Inspection report backup is not available yet'
+        })
+      );
+      input.disabled = !body.available;
+      sendButton.disabled = !body.available;
+      if (body.available) input.focus();
+    }).catch(error => {
+      status.className = 'ai-report-status ai-report-waiting';
+      status.replaceChildren(
+        el('span', { class: 'ai-status-dot', 'aria-hidden': 'true' }),
+        el('span', { text: error.message })
+      );
+    });
+  }
+}
+
+function openSpectoraInspection(inspection) {
+  if (currentData?.meta?.mode === 'design-preview') {
+    alert('Design preview: in the live dashboard this opens the inspection in Spectora.');
+    return;
+  }
+  if (!inspection.spectoraUrl) return;
+  window.open(inspection.spectoraUrl, '_blank', 'noopener');
+}
+
+function openEmailComposer({ title, contacts, subject, message }) {
+  document.querySelector('.email-overlay')?.remove();
+
+  const normalizedContacts = (contacts || [])
+    .map(contact => ({
+      name: String(contact?.name || '').trim(),
+      email: String(contact?.email || '').trim()
+    }))
+    .filter(contact => contact.email);
+
+  const emails = [...new Set(normalizedContacts.map(contact => contact.email))];
+  const contactText = normalizedContacts
+    .map(contact => contact.name ? `${contact.name} <${contact.email}>` : contact.email)
+    .join(', ');
+
+  const subjectInput = el('input', {
+    class: 'email-compose-input',
+    type: 'text',
+    value: subject || '',
+    maxlength: '240'
+  });
+  const messageInput = el('textarea', {
+    class: 'email-compose-textarea',
+    rows: '7'
+  });
+  messageInput.value = message || '';
+
+  const closePanel = () => {
+    overlay.classList.remove('email-overlay-open');
+    setTimeout(() => overlay.remove(), 160);
+    document.removeEventListener('keydown', onKeyDown);
+  };
+
+  const onKeyDown = event => {
+    if (event.key === 'Escape') closePanel();
+  };
+
+  const currentSubject = () => subjectInput.value.trim();
+  const currentMessage = () => messageInput.value;
+
+  const openGmail = () => {
+    const params = new URLSearchParams({
+      view: 'cm',
+      fs: '1',
+      to: emails.join(','),
+      su: currentSubject(),
+      body: currentMessage()
+    });
+    window.open(`https://mail.google.com/mail/?${params.toString()}`, '_blank', 'noopener');
+  };
+
+  const openDefaultMail = () => {
+    const subjectValue = encodeURIComponent(currentSubject());
+    const bodyValue = encodeURIComponent(currentMessage());
+    location.href = `mailto:${emails.join(',')}?subject=${subjectValue}&body=${bodyValue}`;
+  };
+
+  const panel = el('section', {
+    class: 'email-sheet',
+    role: 'dialog',
+    'aria-modal': 'true',
+    'aria-label': title || 'Email'
+  }, [
+    el('div', { class: 'email-sheet-header' }, [
+      el('div', {}, [
+        el('span', { class: 'email-kicker', text: 'Email' }),
+        el('h2', { text: title || 'New Message' }),
+        el('p', { text: 'Review the message, then choose how you want to open it.' })
+      ]),
+      el('button', {
+        class: 'email-close',
+        type: 'button',
+        text: '×',
+        'aria-label': 'Close email',
+        onclick: closePanel
+      })
+    ]),
+    el('div', { class: 'email-sheet-body' }, [
+      el('label', { class: 'email-compose-field' }, [
+        el('span', { text: 'To' }),
+        el('div', { class: 'email-compose-recipient', text: contactText || emails.join(', ') })
+      ]),
+      el('label', { class: 'email-compose-field' }, [
+        el('span', { text: 'Subject' }),
+        subjectInput
+      ]),
+      el('label', { class: 'email-compose-field' }, [
+        el('span', { text: 'Message' }),
+        messageInput
+      ]),
+      el('div', { class: 'email-compose-actions' }, [
+        el('button', {
+          class: 'email-gmail-button',
+          type: 'button',
+          text: 'Open Gmail',
+          onclick: openGmail
+        }),
+        el('button', {
+          class: 'email-default-button',
+          type: 'button',
+          text: 'Open Email App',
+          onclick: openDefaultMail
+        })
+      ]),
+      el('p', {
+        class: 'email-compose-note',
+        text: 'Nothing is sent automatically. You can review and edit the email before sending.'
+      })
+    ])
+  ]);
+
+  const overlay = el('div', {
+    class: 'email-overlay',
+    onclick: event => {
+      if (event.target === overlay) closePanel();
+    }
+  }, [panel]);
+
+  document.body.append(overlay);
+  document.addEventListener('keydown', onKeyDown);
+  requestAnimationFrame(() => overlay.classList.add('email-overlay-open'));
+}
+
+function emailOffice() {
+  openEmailComposer({
+    title: 'Message Inspectology',
+    contacts: [{ name: 'Inspectology Office', email: 'info@inspect-ology.com' }],
+    subject: 'Inspectology Agent Dashboard Message',
+    message: 'Hello Inspectology,\n\n'
+  });
+}
+
+async function emailInspector(inspection) {
+  if (currentData?.meta?.mode === 'design-preview') {
+    openEmailComposer({
+      title: 'Email Inspector',
+      contacts: [
+        { name: 'Tiffany Mercer', email: 'tmercer@inspect-ology.com' },
+        { name: 'Joe Heyne', email: 'jheyne@inspect-ology.com' }
+      ],
+      subject: `Question about inspection - ${inspection.location || inspection.address || 'Inspection property'}`,
+      message: `Hello,\n\nI have a question about the inspection at ${inspection.location || inspection.address || 'this property'}.\n\n`
+    });
+    return;
+  }
+
+  try {
+    const body = await portalApi(
+      `/api/agent/${encodeURIComponent(getConnectionId())}/inspector-contact?inspectionId=${encodeURIComponent(inspection.id || '')}`
+    );
+
+    const contacts = Array.isArray(body.contacts) ? body.contacts : [];
+    if (!contacts.length) throw new Error('Inspector email is not available for this inspection.');
+
+    const property = inspection.location || inspection.address || 'Inspection property';
+
+    openEmailComposer({
+      title: contacts.length > 1 ? 'Email Inspectors' : 'Email Inspector',
+      contacts,
+      subject: `Question about inspection - ${property}`,
+      message: `Hello,\n\nI have a question about the inspection at ${property}.\n\n`
+    });
+  } catch (error) {
+    openEmailComposer({
+      title: 'Message Inspectology',
+      contacts: [{ name: 'Inspectology Office', email: 'info@inspect-ology.com' }],
+      subject: `Question about an inspection`,
+      message: `Hello Inspectology,\n\nI tried to contact the inspector about ${inspection.location || inspection.address || 'an inspection'}, but their email was not available.\n\n`
+    });
+  }
+}
+
+const THIRD_PARTY_VENDORS = Object.freeze([
+  {
+    key: 'termite',
+    service: 'Termite / WDO',
+    company: 'Lynn Pest Management',
+    email: 'lynnpestmgmt@gmail.com',
+    matches: value => /(termite|\bwdo\b|wood[- ]destroy)/i.test(value)
+  },
+  {
+    key: 'chimney',
+    service: 'Chimney',
+    company: 'Cambro Services',
+    email: 'mattglick@cambro.services',
+    matches: value => /chimney/i.test(value)
+  },
+  {
+    key: 'well-water',
+    service: 'Well / Water Testing',
+    company: 'Atlantic Blue',
+    email: 'Kaitlyn@atlanticblue.net',
+    matches: value => /(\bwell\b|water testing|water test|water quality|potability)/i.test(value)
+  },
+  {
+    key: 'septic',
+    service: 'Septic',
+    company: 'Young Septic',
+    email: 'Kaitlyn@atlanticblue.net',
+    matches: value => /septic/i.test(value)
+  }
+]);
+
+function thirdPartyVendorsForInspection(inspection) {
+  const services = String(inspection?.services || '');
+  return THIRD_PARTY_VENDORS.filter(vendor => vendor.matches(services));
+}
+
+function emailThirdPartyVendor(inspection, vendor) {
+  const property = inspection.location || inspection.address || 'Inspection property';
+  openEmailComposer({
+    title: `${vendor.service} Report Help`,
+    contacts: [{ name: vendor.company, email: vendor.email }],
+    subject: `Question about ${vendor.service} report - ${property}`,
+    message: `Hello ${vendor.company},\n\nI have a question about the ${vendor.service} report for ${property}.\n\n`
+  });
+}
+
+function openThirdPartyHelp(inspection) {
+  const vendors = thirdPartyVendorsForInspection(inspection);
+  if (!vendors.length) return;
+
+  if (vendors.length === 1) {
+    emailThirdPartyVendor(inspection, vendors[0]);
+    return;
+  }
+
+  document.querySelector('.vendor-overlay')?.remove();
+
+  const closePanel = () => {
+    overlay.classList.remove('vendor-overlay-open');
+    setTimeout(() => overlay.remove(), 160);
+    document.removeEventListener('keydown', onKeyDown);
+  };
+
+  const onKeyDown = event => {
+    if (event.key === 'Escape') closePanel();
+  };
+
+  const choices = el('div', { class: 'vendor-choice-list' });
+  for (const vendor of vendors) {
+    choices.append(
+      el('button', {
+        class: 'vendor-choice-button',
+        type: 'button',
+        onclick: () => {
+          closePanel();
+          setTimeout(() => emailThirdPartyVendor(inspection, vendor), 180);
+        }
+      }, [
+        el('span', { class: 'vendor-choice-service', text: vendor.service }),
+        el('strong', { text: vendor.company }),
+        el('span', { class: 'vendor-choice-email', text: vendor.email }),
+        el('span', { class: 'vendor-choice-action', text: 'Email vendor ›' })
+      ])
+    );
+  }
+
+  const panel = el('section', {
+    class: 'vendor-sheet',
+    role: 'dialog',
+    'aria-modal': 'true',
+    'aria-label': 'Third-party report help'
+  }, [
+    el('div', { class: 'vendor-sheet-header' }, [
+      el('div', {}, [
+        el('span', { class: 'vendor-kicker', text: 'Report Support' }),
+        el('h2', { text: 'Third-Party Report Help' }),
+        el('p', { text: 'Choose the service you have a question about.' })
+      ]),
+      el('button', {
+        class: 'vendor-close',
+        type: 'button',
+        text: '×',
+        'aria-label': 'Close vendor help',
+        onclick: closePanel
+      })
+    ]),
+    el('div', { class: 'vendor-sheet-body' }, [
+      el('p', {
+        class: 'vendor-property',
+        text: inspection.location || inspection.address || 'Inspection property'
+      }),
+      choices
+    ])
+  ]);
+
+  const overlay = el('div', {
+    class: 'vendor-overlay',
+    onclick: event => {
+      if (event.target === overlay) closePanel();
+    }
+  }, [panel]);
+
+  document.body.append(overlay);
+  document.addEventListener('keydown', onKeyDown);
+  requestAnimationFrame(() => overlay.classList.add('vendor-overlay-open'));
+}
+
+function renderInspectionCard(inspection) {
+  const date = monthDay(inspection.date);
+  const inspectionBody = el('div', { class: 'inspection-card-body' }, [
+    el('p', { class: 'inspection-title', text: inspection.location || inspection.address }),
+    el('p', {
+      class: 'inspection-meta',
+      text: [inspection.services, inspection.inspector, inspection.status].filter(Boolean).join(' | ')
+    })
+  ]);
+
+  if (inspection.published && inspection.id) {
+    const actions = el('div', { class: 'inspection-actions' });
+
+    if (inspection.spectoraUrl || currentData?.meta?.mode === 'design-preview') {
+      actions.append(
+        el('button', {
+          class: 'inspection-open-button',
+          type: 'button',
+          onclick: () => openSpectoraInspection(inspection)
+        }, [
+          el('span', { text: 'Open in Spectora' }),
+          el('span', { class: 'inspection-action-arrow', text: '↗', 'aria-hidden': 'true' })
+        ])
+      );
+    }
+
+    actions.append(
+      el('button', {
+        class: 'inspection-inspector-button',
+        type: 'button',
+        onclick: () => emailInspector(inspection)
+      }, [
+        el('span', { text: 'Email Inspector' }),
+        el('span', { class: 'inspection-mail-icon', text: '✉', 'aria-hidden': 'true' })
+      ])
+    );
+
+    const thirdPartyVendors = thirdPartyVendorsForInspection(inspection);
+    if (thirdPartyVendors.length) {
+      actions.append(
+        el('button', {
+          class: 'inspection-vendor-button',
+          type: 'button',
+          onclick: () => openThirdPartyHelp(inspection)
+        }, [
+          el('span', { text: 'Third-Party Report Help' }),
+          el('span', { class: 'inspection-vendor-icon', text: '?', 'aria-hidden': 'true' })
+        ])
+      );
+    }
+
+    actions.append(
+      el('button', {
+        class: 'inspection-ai-button',
+        type: 'button',
+        onclick: () => openInspectologyAi(inspection)
+      }, [
+        el('span', { class: 'inspection-ai-icon', text: '✦', 'aria-hidden': 'true' }),
+        el('span', { text: 'Ask Inspectology AI' })
+      ])
+    );
+
+    inspectionBody.append(actions);
+  }
+
+  return el('article', { class: 'timeline-item' }, [
+    el('div', { class: 'date' }, [
+      document.createTextNode(date.month),
+      el('span', { text: date.day })
+    ]),
+    inspectionBody
+  ]);
+}
+
+function renderNextInspection(inspection) {
+  if (!inspection) return null;
+
+  const children = [
+    el('div', { class: 'next-inspection-date' }, [
+      el('span', { text: 'Next inspection' }),
+      el('strong', { text: fmtAppointmentTime(inspection.datetime || inspection.date) })
+    ]),
+    el('div', { class: 'next-inspection-main' }, [
+      el('strong', { class: 'next-inspection-address', text: inspection.location || inspection.address || 'Property address unavailable' }),
+      el('span', { class: 'next-inspection-services', text: inspection.services || 'Inspection' }),
+      inspection.inspector
+        ? el('span', { class: 'next-inspection-inspector', text: `Inspector: ${inspection.inspector}` })
+        : document.createTextNode('')
+    ])
+  ];
+
+  if (inspection.spectoraUrl || currentData?.meta?.mode === 'design-preview') {
+    children.push(
+      el('button', {
+        class: 'next-inspection-button',
+        type: 'button',
+        onclick: () => openSpectoraInspection(inspection)
+      }, [
+        el('span', { text: 'Open in Spectora' }),
+        el('span', { text: '↗', 'aria-hidden': 'true' })
+      ])
+    );
+  }
+
+  return el('section', { class: 'section dashboard-section next-inspection-section' }, [
+    ...children
+  ]);
+}
+
+function renderInspectionHistory(inspections) {
+  const timeline = el('div', { class: 'timeline' });
+  const status = el('p', { class: 'inspection-search-status', 'aria-live': 'polite' });
+
+  const showInspections = (items, label = '') => {
+    timeline.replaceChildren();
+    const rows = Array.isArray(items) ? items : [];
+    for (const inspection of rows) timeline.append(renderInspectionCard(inspection));
+    status.textContent = label || (rows.length
+      ? 'Showing your 5 most recent inspections.'
+      : 'No inspections found.');
+  };
+
+  const pastInspections = (inspections || []).filter(isPastInspection);
+  showInspections(pastInspections.slice(0, 5));
+
+  const searchInput = el('input', {
+    class: 'inspection-search-input',
+    type: 'search',
+    placeholder: 'Search past inspections by address',
+    autocomplete: 'off',
+    minlength: '2'
+  });
+
+  const clearButton = el('button', {
+    class: 'inspection-search-clear',
+    type: 'button',
+    text: 'Clear',
+    hidden: true,
+    onclick: () => {
+      searchInput.value = '';
+      clearButton.hidden = true;
+      showInspections(pastInspections.slice(0, 5));
+      searchInput.focus();
+    }
+  });
+
+  const form = el('form', { class: 'inspection-search-form' }, [
+    searchInput,
+    el('button', { class: 'inspection-search-button', type: 'submit', text: 'Search' }),
+    clearButton
+  ]);
+
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const query = searchInput.value.trim();
+    if (query.length < 2) {
+      status.textContent = 'Enter at least 2 characters to search.';
+      return;
+    }
+
+    clearButton.hidden = false;
+    status.textContent = 'Searching inspection history…';
+
+    try {
+      let matches;
+      if (currentData?.meta?.mode === 'design-preview') {
+        const normalized = query.toLowerCase();
+        matches = pastInspections.filter(item =>
+          [item.location, item.address, item.city, item.state, item.date, item.inspector, item.services]
+            .filter(Boolean)
+            .some(value => String(value).toLowerCase().includes(normalized))
+        );
+      } else {
+        const body = await portalApi(
+          `/api/agent/${encodeURIComponent(getConnectionId())}/inspections-search?q=${encodeURIComponent(query)}`
+        );
+        matches = (body.inspections || []).filter(isPastInspection);
+      }
+
+      showInspections(matches, matches.length
+        ? `${matches.length} inspection${matches.length === 1 ? '' : 's'} found.`
+        : 'No matching inspections found.');
+    } catch (error) {
+      timeline.replaceChildren();
+      status.textContent = error.message;
+    }
+  });
+
+  return el('section', { class: 'section dashboard-section', id: 'history' }, [
+    el('div', { class: 'section-heading history-heading' }, [
+      el('div', {}, [
+        el('h2', { text: 'Inspection History' }),
+        el('p', { class: 'section-description', text: 'Your five newest inspections are shown below. Search by address for older inspections.' })
+      ])
+    ]),
+    form,
+    status,
+    timeline
   ]);
 }
 
@@ -207,133 +1204,169 @@ function renderDashboard(data) {
           alt: 'Inspectology'
         })
       ]),
-      el('div', { class: 'badge', text: 'Agent Dashboard' })
+      el('div', { class: 'badge partner-dashboard-badge', text: 'Inspectology Partner Agent Dashboard' })
     ])
   );
 
-  const avatar = el('img', {
-    class: 'avatar',
-    src: agent.photoUrl || '/assets/mock-agent.svg',
-    alt: `${agent.firstName} ${agent.lastName}`
-  });
+  const profilePhotoControl = renderProfilePhotoControl(agent);
 
   app.append(
     el('section', { class: 'hero' }, [
-      avatar,
+      el('div', { class: 'hero-profile-actions' }, [
+        profilePhotoControl,
+        renderMyInfoButton(agent)
+      ]),
       el('h1', { class: 'agent-name', text: `${agent.firstName} ${agent.lastName}` }),
       el('p', { class: 'agency', text: agent.agency || 'Real estate partner' }),
-      el('p', { class: 'agent-location', text: [agent.city, agent.state].filter(Boolean).join(', ') }),
-      el('div', { class: 'tier' }, [
-        el('span', { class: 'tier-dot', 'aria-hidden': 'true' }),
-        document.createTextNode(tier.label || 'Partner')
-      ])
+      el('p', { class: 'agent-location', text: [agent.city, agent.state].filter(Boolean).join(', ') })
     ])
   );
 
+  const installPromptCard = renderInstallPromptCard();
+  if (installPromptCard) app.append(installPromptCard);
+
   app.append(
-    el('section', { class: 'section' }, [
-      el('h2', { text: 'Schedule Next Inspection' }),
-      el('div', { class: 'actions' }, [
-        el('a', { class: 'action', href: company.bookingUrl, target: '_blank', rel: 'noopener' }, [
-          el('strong', { text: 'Online' }),
-          el('span', { text: 'Open the inspection scheduler' })
+    el('section', { class: 'section dashboard-section schedule-section' }, [
+      el('div', { class: 'section-heading' }, [
+        el('div', {}, [
+          el('h2', { text: 'Schedule Next Inspection' }),
+          el('p', { class: 'section-description', text: 'Choose the fastest way to get your next inspection on the calendar.' })
+        ])
+      ]),
+      el('div', { class: 'schedule-actions' }, [
+        el('a', { class: 'schedule-button schedule-button-primary', href: company.bookingUrl, target: '_blank', rel: 'noopener' }, [
+          el('span', { text: 'Schedule an Inspection' })
         ]),
-        el('a', { class: 'action', href: `tel:${company.phone.replace(/[^\d+]/g, '')}` }, [
-          el('strong', { text: 'Call' }),
-          el('span', { text: company.phone })
+        el('a', { class: 'schedule-button', href: `tel:${company.phone.replace(/[^\d+]/g, '')}` }, [
+          el('span', { class: 'schedule-button-icon', text: '☎', 'aria-hidden': 'true' }),
+          el('span', { text: 'Call' })
         ]),
-        el('a', { class: 'action', href: company.whatsappUrl, target: '_blank', rel: 'noopener' }, [
-          el('strong', { text: 'Message' }),
-          el('span', { text: 'Start a quick conversation' })
-        ]),
-        el('a', { class: 'action', href: company.website, target: '_blank', rel: 'noopener' }, [
-          el('strong', { text: 'Website' }),
-          el('span', { text: 'View services and resources' })
+        el('button', { class: 'schedule-button', type: 'button', onclick: emailOffice }, [
+          el('span', { class: 'schedule-button-icon', text: '✉', 'aria-hidden': 'true' }),
+          el('span', { text: 'Message' })
         ])
       ])
     ])
   );
 
-  app.append(
-    el('section', { class: 'section' }, [
-      el('h2', { text: 'Relationship Snapshot' }),
-      el('div', { class: 'metrics' }, [
-        el('div', { class: 'metric' }, [el('strong', { text: stats.totalInspections }), el('span', { text: 'Total' })]),
-        el('div', { class: 'metric' }, [el('strong', { text: stats.buyingInspections }), el('span', { text: 'Buying' })]),
-        el('div', { class: 'metric' }, [el('strong', { text: stats.sellingInspections }), el('span', { text: 'Selling' })])
-      ])
-    ])
-  );
+  const nextInspection = findNextInspection(inspections);
+  const nextInspectionCard = renderNextInspection(nextInspection);
+  if (nextInspectionCard) app.append(nextInspectionCard);
+
+  const additionalServices = [
+    { name: 'Radon Testing', note: 'Know the level before closing.' },
+    { name: 'Sewer Scope', note: 'Camera evaluation of the main sewer line.' },
+    { name: 'Termite / WDO', note: 'Wood-destroying organism inspection.' },
+    { name: 'Mold Testing', note: 'Air and surface sampling when needed.' },
+    { name: 'Asbestos Testing', note: 'Material sampling and laboratory analysis.' },
+    { name: 'Environmental Testing', note: 'Targeted testing for property concerns.' }
+  ];
 
   app.append(
-    el('section', { class: 'section' }, [
-      el('h2', { text: 'Partnership' }),
-      el('div', { class: 'partnership' }, [
-        el('div', { class: 'partnership-row' }, [
-          el('span', { text: fmtDate(stats.firstInspection) || 'Start' }),
-          el('span', { text: fmtDate(stats.lastInspection) || 'Present' })
-        ]),
-        el('div', { class: 'bar', 'aria-hidden': 'true' }, [el('span')]),
-        el('p', {
-          class: 'privacy-note',
-          text: portalModeCopy.modeNotice(data.meta?.mode)
-        })
-      ])
-    ])
-  );
-
-  app.append(renderProfileSection(agent));
-
-  const timeline = el('div', { class: 'timeline' });
-  for (const inspection of inspections) {
-    const date = monthDay(inspection.date);
-    timeline.append(
-      el('article', { class: 'timeline-item' }, [
-        el('div', { class: 'date' }, [
-          document.createTextNode(date.month),
-          el('span', { text: date.day })
-        ]),
+    el('section', { class: 'section dashboard-section services-section' }, [
+      el('div', { class: 'section-heading services-heading' }, [
         el('div', {}, [
-          el('p', { class: 'inspection-title', text: inspection.location || inspection.address }),
+          el('h2', { text: 'Additional Services' }),
           el('p', {
-            class: 'inspection-meta',
-            text: `${inspection.services} | ${inspection.inspector} | ${inspection.status}`
+            class: 'section-description',
+            text: 'Add specialized testing or evaluations to help your client get a more complete picture of the property.'
           })
         ])
-      ])
-    );
-  }
-
-  app.append(
-    el('section', { class: 'section', id: 'history' }, [
-      el('h2', { text: 'Inspection History' }),
-      timeline
+      ]),
+      el('div', { class: 'service-grid' },
+        additionalServices.map(service =>
+          el('div', { class: 'service-card' }, [
+            el('strong', { text: service.name }),
+            el('span', { text: service.note })
+          ])
+        )
+      ),
+      el('a', {
+        class: 'services-cta',
+        href: company.bookingUrl,
+        target: '_blank',
+        rel: 'noopener',
+        text: 'Schedule or Add Services'
+      })
     ])
   );
 
+  const totalInspections = Number(stats.totalInspections || 0);
+  const partnershipMilestone = totalInspections >= 100
+    ? '100+ inspections together'
+    : totalInspections >= 50
+      ? '50+ inspections together'
+      : totalInspections >= 25
+        ? '25+ inspections together'
+        : totalInspections >= 10
+          ? '10+ inspections together'
+          : '';
+
   app.append(
-    el('section', { class: 'section app-install-card' }, [
-      el('h2', { text: 'Agent Dashboard' }),
-      el('p', { class: 'install-copy', text: 'Add the Inspectology Agent Dashboard to your phone for one-tap access.' }),
-      el('button', { class: 'secondary-button', type: 'button', text: 'Install Dashboard', onclick: installApp })
+    el('section', { class: 'section dashboard-section partnership-section' }, [
+      el('div', { class: 'section-heading partnership-heading' }, [
+        el('div', {}, [
+          el('h2', { text: 'Your Inspectology Partnership' }),
+          el('p', { class: 'section-description', text: 'A quick look at the inspections we have completed together.' })
+        ]),
+        partnershipMilestone
+          ? el('span', { class: 'partnership-badge', text: partnershipMilestone })
+          : document.createTextNode('')
+      ]),
+      el('div', { class: 'partnership-metrics' }, [
+        el('div', { class: 'partnership-metric partnership-metric-primary' }, [
+          el('strong', { text: totalInspections }),
+          el('span', { text: 'Inspections Together' })
+        ]),
+        el('div', { class: 'partnership-metric' }, [
+          el('strong', { text: stats.buyingInspections }),
+          el('span', { text: 'Buyer Inspections' })
+        ]),
+        el('div', { class: 'partnership-metric' }, [
+          el('strong', { text: stats.sellingInspections }),
+          el('span', { text: 'Seller Inspections' })
+        ])
+      ]),
+      el('div', { class: 'partnership-dates' }, [
+        el('div', {}, [
+          el('span', { text: 'Partner since' }),
+          el('strong', { text: fmtDate(stats.firstInspection) || 'Not available' })
+        ]),
+        el('div', {}, [
+          el('span', { text: 'Most recent inspection' }),
+          el('strong', { text: fmtDate(stats.lastInspection) || 'Not available' })
+        ])
+      ]),
+      el('p', { class: 'partnership-thank-you', text: 'Thanks for trusting Inspectology with your clients.' }),
+      el('p', {
+        class: 'privacy-note partnership-privacy',
+        text: portalModeCopy.modeNotice(data.meta?.mode)
+      })
     ])
   );
+
+  app.append(renderInspectionHistory(inspections));
 
   app.append(
     el('footer', { class: 'footer' }, [
-      document.createTextNode(`${company.license} | ${company.website}`)
+      document.createTextNode(company.website)
     ]),
-    el('nav', { class: 'bottom-nav', 'aria-label': 'Agent app navigation' }, [
+    el('nav', { class: 'bottom-nav bottom-nav-three', 'aria-label': 'Agent app navigation' }, [
       el('a', { href: '#top', text: 'Home' }),
-      el('a', { href: '#profile', text: 'Profile' }),
-      el('a', { href: '#history', text: 'History' }),
-      el('button', { type: 'button', text: 'Install', onclick: installApp })
+      el('button', { type: 'button', text: 'My Info', onclick: () => openAgentInfo(mergedAgent(currentData.agent)) }),
+      el('a', { href: '#history', text: 'History' })
     ])
   );
 }
 
 async function load() {
   try {
+    if (location.pathname === '/design-preview') {
+      const response = await fetch('/api/design-preview', { cache: 'no-store' });
+      if (!response.ok) throw new Error('Design preview is unavailable on this deployment.');
+      renderDashboard(await response.json());
+      return;
+    }
     if (!auth.connectionId && location.pathname === '/') {
       throw new Error('Open your personal Inspectology invite link once to connect this device.');
     }
@@ -371,6 +1404,11 @@ window.addEventListener('beforeinstallprompt', event => {
 
 window.addEventListener('appinstalled', () => {
   deferredInstallPrompt = null;
+  if (currentData) renderDashboard(currentData);
+});
+
+window.matchMedia('(display-mode: standalone)').addEventListener?.('change', () => {
+  if (currentData) renderDashboard(currentData);
 });
 
 if ('serviceWorker' in navigator) {

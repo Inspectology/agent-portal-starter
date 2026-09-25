@@ -8,29 +8,12 @@ const agentSearch = document.getElementById('agentSearch');
 const searchMessage = document.getElementById('searchMessage');
 const results = document.getElementById('results');
 const signOut = document.getElementById('signOut');
-const reportTestForm = document.getElementById('reportTestForm');
-const reportConnectionId = document.getElementById('reportConnectionId');
-const reportAddress = document.getElementById('reportAddress');
-const reportDate = document.getElementById('reportDate');
-const reportTestMessage = document.getElementById('reportTestMessage');
-const reportTestResults = document.getElementById('reportTestResults');
-const reportLinkTestForm = document.getElementById('reportLinkTestForm');
-const reportLinkUrl = document.getElementById('reportLinkUrl');
-const reportLinkTestMessage = document.getElementById('reportLinkTestMessage');
-const reportLinkTestResults = document.getElementById('reportLinkTestResults');
-const networkTestForm = document.getElementById('networkTestForm');
-const networkTestUrl = document.getElementById('networkTestUrl');
-const networkTestMessage = document.getElementById('networkTestMessage');
-const networkTestResults = document.getElementById('networkTestResults');
-const reportApiTestForm = document.getElementById('reportApiTestForm');
-const reportApiTestUrl = document.getElementById('reportApiTestUrl');
-const reportApiTestMessage = document.getElementById('reportApiTestMessage');
-const reportApiTestResults = document.getElementById('reportApiTestResults');
 const driveBackupForm = document.getElementById('driveBackupForm');
 const driveBackupAddress = document.getElementById('driveBackupAddress');
 const driveBackupDate = document.getElementById('driveBackupDate');
 const driveBackupMessage = document.getElementById('driveBackupMessage');
 const driveBackupResults = document.getElementById('driveBackupResults');
+const launchReadinessResults = document.getElementById('launchReadinessResults');
 
 let adminKey = sessionStorage.getItem('inspectologyAdminKey') || '';
 
@@ -61,9 +44,33 @@ function showSearch() {
   agentSearch.focus();
 }
 
+function renderLaunchReadiness(readiness = {}) {
+  if (!launchReadinessResults) return;
+  launchReadinessResults.replaceChildren();
+
+  const items = [
+    ['Deployment', readiness.environment || 'unknown', Boolean(readiness.environment)],
+    ['Live Spectora', readiness.spectora ? 'Configured' : 'Missing', Boolean(readiness.spectora)],
+    ['Google Drive', readiness.googleDrive ? 'Configured' : 'Missing', Boolean(readiness.googleDrive)],
+    ['Inspectology AI', readiness.openAi ? 'Configured' : 'Missing', Boolean(readiness.openAi)],
+    ['Profile update email', readiness.profileEmail ? 'Configured' : 'Missing', Boolean(readiness.profileEmail)],
+    ['Admin access', readiness.adminAccess ? 'Configured' : 'Missing', Boolean(readiness.adminAccess)]
+  ];
+
+  for (const [label, value, ready] of items) {
+    launchReadinessResults.append(
+      el('div', { class: `launch-readiness-item ${ready ? 'launch-ready' : 'launch-missing'}` }, [
+        el('span', { text: label }),
+        el('strong', { text: value })
+      ])
+    );
+  }
+}
+
 async function verifyAdmin() {
-  await api('/api/admin/session');
+  const body = await api('/api/admin/session');
   sessionStorage.setItem('inspectologyAdminKey', adminKey);
+  renderLaunchReadiness(body.readiness || {});
   showSearch();
 }
 
@@ -202,266 +209,6 @@ driveBackupForm.addEventListener('submit', async event => {
     }
   } catch (error) {
     driveBackupMessage.textContent = error.message;
-  }
-});
-
-reportLinkTestForm.addEventListener('submit', async event => {
-  event.preventDefault();
-  reportLinkTestResults.replaceChildren();
-  reportLinkTestMessage.textContent = 'Testing published Spectora report...';
-
-  try {
-    const body = await api('/api/admin/report-link-test', {
-      method: 'POST',
-      body: JSON.stringify({ url: reportLinkUrl.value.trim() })
-    });
-
-    const readable = body.statusCode >= 200 && body.statusCode < 300;
-    const useful = body.textCharacters > 500 && (body.containsAddress || body.containsInspectionTerms);
-
-    reportLinkTestMessage.textContent = readable
-      ? (useful
-          ? 'Success. The server can read useful report text from this published Spectora report.'
-          : 'The page is reachable, but the HTML does not contain enough useful report text yet.')
-      : `Spectora returned HTTP ${body.statusCode}.`;
-
-    reportLinkTestResults.append(
-      el('div', { class: 'report-test-summary' }, [
-        el('strong', { text: body.title || 'Published Spectora report' }),
-        el('span', { text: `HTTP ${body.statusCode} | ${body.contentType || 'Unknown content type'}` }),
-        el('span', { text: `HTML bytes: ${body.htmlBytes} | Readable text: ${body.textCharacters} characters` }),
-        el('span', { text: `Address found: ${body.containsAddress ? 'Yes' : 'No'} | Inspection language found: ${body.containsInspectionTerms ? 'Yes' : 'No'}` }),
-        el('p', { class: 'report-text-preview', text: body.textPreview || 'No readable text returned.' })
-      ])
-    );
-  } catch (error) {
-    reportLinkTestMessage.textContent = error.message;
-  }
-});
-
-reportApiTestForm.addEventListener('submit', async event => {
-  event.preventDefault();
-  reportApiTestResults.replaceChildren();
-  reportApiTestMessage.textContent = 'Calling Spectora public report API...';
-
-  try {
-    const body = await api('/api/admin/report-api-test', {
-      method: 'POST',
-      body: JSON.stringify({ url: reportApiTestUrl.value.trim() })
-    });
-
-    const success = body.statusCode >= 200 && body.statusCode < 300 && body.json;
-    reportApiTestMessage.textContent = success
-      ? (body.containsReportContent
-          ? 'Success. Spectora returned structured report data from the public report API.'
-          : 'Spectora returned JSON, but the response does not yet look like the full report content.')
-      : `Spectora returned HTTP ${body.statusCode}. JSON response: ${body.json ? 'Yes' : 'No'}.`;
-
-    reportApiTestResults.append(
-      el('div', { class: 'report-test-summary' }, [
-        el('strong', { text: 'Hermes public report API' }),
-        el('span', { text: `Report UUID: ${body.reportUuid || ''}` }),
-        el('span', { text: `HTTP ${body.statusCode} | ${body.contentType || 'Unknown content type'}` }),
-        el('span', { text: `Response bytes: ${body.responseBytes || 0} | JSON: ${body.json ? 'Yes' : 'No'}` }),
-        el('span', { text: `Address found: ${body.containsAddress ? 'Yes' : 'No'} | Report content terms: ${body.containsReportContent ? 'Yes' : 'No'}` })
-      ])
-    );
-
-    if ((body.topLevelKeys || []).length) {
-      reportApiTestResults.append(el('h3', { class: 'scan-subheading', text: 'Top-level keys' }));
-      reportApiTestResults.append(
-        el('div', { class: 'endpoint-candidate endpoint-string' }, [
-          el('code', { text: body.topLevelKeys.join(', ') })
-        ])
-      );
-    }
-
-    if ((body.jsonShape || []).length) {
-      reportApiTestResults.append(el('h3', { class: 'scan-subheading', text: 'JSON shape' }));
-      for (const value of body.jsonShape.slice(0, 100)) {
-        reportApiTestResults.append(
-          el('div', { class: 'endpoint-candidate endpoint-string' }, [
-            el('code', { text: value })
-          ])
-        );
-      }
-    }
-
-    reportApiTestResults.append(
-      el('div', { class: 'bundle-context-card' }, [
-        el('strong', { text: 'Response preview' }),
-        el('code', { text: body.preview || 'No response body.' })
-      ])
-    );
-  } catch (error) {
-    reportApiTestMessage.textContent = error.message;
-  }
-});
-
-networkTestForm.addEventListener('submit', async event => {
-  event.preventDefault();
-  networkTestResults.replaceChildren();
-  networkTestMessage.textContent = 'Scanning Spectora Report Viewer scripts...';
-
-  try {
-    const body = await api('/api/admin/report-network-test', {
-      method: 'POST',
-      body: JSON.stringify({ url: networkTestUrl.value.trim() })
-    });
-
-    const candidates = body.endpointCandidates || [];
-    const paths = body.likelyApiPaths || [];
-    const contexts = body.bundleContexts || [];
-    const hermesContexts = body.hermesContexts || [];
-    const scripts = body.scannedScripts || [];
-
-    networkTestMessage.textContent = candidates.length || paths.length || contexts.length || hermesContexts.length
-      ? `Found ${candidates.length} endpoint candidates, ${paths.length} likely API paths, and ${hermesContexts.length} Hermes API context snippets.`
-      : `Scanned ${scripts.length} script file${scripts.length === 1 ? '' : 's'}, but no useful report-loading clues were found.`;
-
-    const scriptSummary = el('div', { class: 'report-test-summary' }, [
-      el('strong', { text: 'Spectora Report Viewer deep scan' }),
-      el('span', { text: `Report HTTP ${body.reportStatus || ''}` }),
-      el('span', { text: `Scripts found: ${(body.scriptSources || []).length} | Scripts scanned: ${scripts.filter(item => item.scanned).length}` }),
-      el('span', { text: `Likely API paths: ${paths.length} | Network contexts: ${contexts.length}` })
-    ]);
-    networkTestResults.append(scriptSummary);
-
-    if (candidates.length) {
-      networkTestResults.append(el('h3', { class: 'scan-subheading', text: 'Likely endpoints / hosts' }));
-      for (const candidate of candidates) {
-        networkTestResults.append(
-          el('div', { class: 'endpoint-candidate' }, [
-            el('code', { text: candidate })
-          ])
-        );
-      }
-    }
-
-    if (paths.length) {
-      networkTestResults.append(el('h3', { class: 'scan-subheading', text: 'Likely API paths' }));
-      for (const value of paths.slice(0, 100)) {
-        networkTestResults.append(
-          el('div', { class: 'endpoint-candidate endpoint-string' }, [
-            el('code', { text: value })
-          ])
-        );
-      }
-    }
-
-    const authContexts = hermesContexts.filter(item =>
-      /(Authorization|Bearer|id_token|access_token|validate_access_token|report_view_id|report_views|AUTH_MISSING)/i.test(item.needle || '') ||
-      /(Authorization|Bearer|id_token|access_token|validate_access_token|report_view_id|report_views|AUTH_MISSING)/i.test(item.snippet || '')
-    );
-
-    if (authContexts.length) {
-      networkTestResults.append(el('h3', { class: 'scan-subheading auth-scan-heading', text: 'Auth flow clues' }));
-      for (const item of authContexts.slice(0, 20)) {
-        networkTestResults.append(
-          el('article', { class: 'bundle-context-card auth-context-card' }, [
-            el('strong', { text: item.needle || 'Auth' }),
-            el('code', { text: item.snippet || '' })
-          ])
-        );
-      }
-    }
-
-    if (hermesContexts.length) {
-      networkTestResults.append(el('h3', { class: 'scan-subheading', text: 'Hermes API context' }));
-      for (const item of hermesContexts) {
-        networkTestResults.append(
-          el('article', { class: 'bundle-context-card hermes-context-card' }, [
-            el('strong', { text: item.needle || 'Hermes' }),
-            el('code', { text: item.snippet || '' })
-          ])
-        );
-      }
-    }
-
-    if (contexts.length) {
-      networkTestResults.append(el('h3', { class: 'scan-subheading', text: 'Bundle context' }));
-      for (const item of contexts) {
-        networkTestResults.append(
-          el('article', { class: 'bundle-context-card' }, [
-            el('strong', { text: item.needle || 'Context' }),
-            el('code', { text: item.snippet || '' })
-          ])
-        );
-      }
-    }
-
-    if (!candidates.length && !paths.length && !contexts.length && scripts.length) {
-      for (const script of scripts) {
-        networkTestResults.append(
-          el('div', { class: 'report-file-card' }, [
-            el('strong', { text: script.scanned ? 'Scanned script' : 'Skipped script' }),
-            el('span', { text: script.url || '' }),
-            el('span', { text: script.scanned ? `${script.bytes || 0} bytes | ${script.candidateCount || 0} candidates` : (script.reason || '') })
-          ])
-        );
-      }
-    }
-  } catch (error) {
-    networkTestMessage.textContent = error.message;
-  }
-});
-
-reportTestForm.addEventListener('submit', async event => {
-  event.preventDefault();
-  reportTestResults.replaceChildren();
-  reportTestMessage.textContent = 'Checking Spectora attachments...';
-
-  const params = new URLSearchParams({
-    connectionId: reportConnectionId.value.trim(),
-    address: reportAddress.value.trim()
-  });
-  if (reportDate.value) params.set('date', reportDate.value);
-
-  try {
-    const body = await api(`/api/admin/report-test?${params.toString()}`);
-    const inspection = body.inspection || {};
-    const pdfs = body.pdfAttachments || [];
-    const attachments = body.attachments || [];
-
-    reportTestMessage.textContent = pdfs.length
-      ? `Found ${pdfs.length} PDF attachment${pdfs.length === 1 ? '' : 's'} for this inspection.`
-      : `Found the inspection, but no PDF attachment was returned. Total attachments: ${attachments.length}.`;
-
-    const summary = el('div', { class: 'report-test-summary' }, [
-      el('strong', { text: inspection.fullAddress || reportAddress.value }),
-      el('span', { text: inspection.datetime ? new Date(inspection.datetime).toLocaleString() : '' }),
-      el('span', { text: inspection.publishedAt ? 'Published' : 'Not published' }),
-      el('span', { text: `Inspection ID ${inspection.id || ''}` })
-    ]);
-    reportTestResults.append(summary);
-
-    const rows = pdfs.length ? pdfs : attachments;
-    if (!rows.length) {
-      reportTestResults.append(el('p', { class: 'admin-message', text: 'No attachments were returned by Spectora.' }));
-      return;
-    }
-
-    for (const attachment of rows) {
-      const children = [
-        el('strong', { text: attachment.name || attachment.fileName || 'Attachment' }),
-        el('span', { text: attachment.fileName || attachment.attachmentType || '' }),
-        el('span', { text: attachment.report ? 'Report attachment' : 'Additional document' })
-      ];
-      if (attachment.fileUrl) {
-        children.push(
-          el('a', {
-            class: 'link-button',
-            href: attachment.fileUrl,
-            target: '_blank',
-            rel: 'noopener',
-            text: 'Open file'
-          })
-        );
-      }
-      reportTestResults.append(el('article', { class: 'report-file-card' }, children));
-    }
-  } catch (error) {
-    reportTestMessage.textContent = error.message;
   }
 });
 

@@ -109,6 +109,17 @@ function createConfig(env = process.env) {
     companyId: mode === 'live' ? validatedPositiveDecimalId(env.SPECTORA_COMPANY_ID, 'SPECTORA_COMPANY_ID') : '',
     signingSecret: env.PORTAL_SIGNING_SECRET || '',
     adminAccessKey: String(env.ADMIN_ACCESS_KEY || '').trim(),
+    ai: {
+      apiKey: String(env.OPENAI_API_KEY || '').trim(),
+      model: String(env.OPENAI_MODEL || 'gpt-5.6-luna').trim(),
+      rateLimitMax: boundedInteger(env.AI_RATE_LIMIT_MAX, 10, 1, 100),
+      rateLimitWindowMs: boundedInteger(env.AI_RATE_LIMIT_WINDOW_MS, 60_000, 1000, 3_600_000)
+    },
+    profileNotifications: {
+      resendApiKey: String(env.RESEND_API_KEY || '').trim(),
+      to: String(env.PROFILE_CHANGE_EMAIL_TO || '').trim(),
+      from: String(env.PROFILE_CHANGE_EMAIL_FROM || '').trim()
+    },
     googleDrive: {
       projectNumber: String(env.GOOGLE_CLOUD_PROJECT_NUMBER || '').trim(),
       poolId: String(env.GOOGLE_WORKLOAD_IDENTITY_POOL_ID || '').trim(),
@@ -116,6 +127,7 @@ function createConfig(env = process.env) {
       serviceAccountEmail: String(env.GOOGLE_DRIVE_SERVICE_ACCOUNT_EMAIL || '').trim(),
       backupFolderId: String(env.GOOGLE_DRIVE_BACKUP_FOLDER_ID || '').trim()
     },
+    deploymentEnvironment: String(env.VERCEL_TARGET_ENV || env.VERCEL_ENV || '').trim().toLowerCase(),
     publicOrigin: validatedOrigin(
       env.PORTAL_PUBLIC_ORIGIN || (env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${env.VERCEL_PROJECT_PRODUCTION_URL}` : ''),
       'PORTAL_PUBLIC_ORIGIN'
@@ -280,12 +292,18 @@ function readJsonBody(req, maxBytes = 16_384) {
 }
 
 function resolvePortalOrigin(req, config) {
-  if (config.publicOrigin) return config.publicOrigin;
   const host = String(req.headers.host || '').trim();
   if (!/^[A-Za-z0-9.-]+(?::[0-9]+)?$/.test(host)) throw authError('Portal public origin is not configured', 500);
+
   const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
   const protocol = forwardedProto === 'http' && /^localhost(?::|$)/.test(host) ? 'http' : 'https';
-  return `${protocol}://${host}`;
+  const requestOrigin = `${protocol}://${host}`;
+
+  if (config.deploymentEnvironment && config.deploymentEnvironment !== 'production') {
+    return requestOrigin;
+  }
+
+  return config.publicOrigin || requestOrigin;
 }
 
 function base64UrlJson(value) {
@@ -451,6 +469,233 @@ function dateToBackupLabels(value) {
   ];
 }
 
+async function findGoogleDriveBackup(config, runtimeOidcToken, address, date) {
+  const token = await googleDriveAccessToken(config, runtimeOidcToken);
+  const rootFiles = await googleDriveListChildren(token, config.googleDrive.backupFolderId);
+  const street = String(address || '').split(',')[0].trim();
+  const normalizedStreet = normalizeDriveMatchText(street);
+  const dateLabels = dateToBackupLabels(date);
+
+  const folders = rootFiles.filter(file =>
+    file.mimeType === 'application/vnd.google-apps.folder'
+  );
+
+  const folder = folders.find(file => {
+    const name = String(file.name || '');
+    return normalizeDriveMatchText(name).includes(normalizedStreet) &&
+      dateLabels.some(label => name.includes(label));
+  }) || null;
+
+  if (!folder) return { token, folder: null, files: [], pdfs: [], fullReport: null, summaryReport: null };
+
+  const files = await googleDriveListChildren(token, folder.id);
+  const pdfs = files.filter(file => file.mimeType === 'application/pdf');
+  const fullReport = pdfs.find(file =>
+    /inspectology home inspection report/i.test(file.name || '') &&
+    !/-summary\.pdf$/i.test(file.name || '')
+  ) || null;
+  const summaryReport = pdfs.find(file => /-summary\.pdf$/i.test(file.name || '')) || null;
+
+  return { token, folder, files, pdfs, fullReport, summaryReport };
+}
+
+function googleDriveDownloadFile(accessToken, fileId, maxBytes = 30_000_000) {
+  const id = encodeURIComponent(String(fileId || ''));
+  const url = new URL(`https://www.googleapis.com/drive/v3/files/${id}?alt=media&supportsAllDrives=true`);
+
+  return new Promise((resolve, reject) => {
+    const request = https.get(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      timeout: 30_000
+    }, response => {
+      if (response.statusCode < 200 || response.statusCode > 299) {
+        const statusCode = Number(response.statusCode || 0);
+        response.resume();
+        reject(new Error(`Google Drive file download returned HTTP ${statusCode}`));
+        return;
+      }
+
+      const chunks = [];
+      let bytes = 0;
+      response.on('data', chunk => {
+        bytes += chunk.length;
+        if (bytes > maxBytes) {
+          reject(new Error('Inspection report PDF exceeded the AI file size limit'));
+          response.destroy();
+          return;
+        }
+        chunks.push(chunk);
+      });
+      response.on('end', () => resolve(Buffer.concat(chunks)));
+      response.on('error', reject);
+    });
+    request.on('timeout', () => request.destroy(new Error('Google Drive file download timed out')));
+    request.on('error', reject);
+  });
+}
+
+async function sendProfileChangeNotification(config, connectionId, agent, changes) {
+  const email = config.profileNotifications || {};
+  if (!email.resendApiKey || !email.to || !email.from) {
+    return { sent: false, reason: 'not_configured' };
+  }
+
+  const labels = {
+    firstName: 'First name',
+    lastName: 'Last name',
+    agency: 'Brokerage / agency',
+    phone: 'Phone',
+    email: 'Email',
+    city: 'City',
+    state: 'State'
+  };
+
+  const changedLines = changes.map(change =>
+    `${labels[change.field] || change.field}: "${change.oldValue || '(blank)'}" → "${change.newValue || '(blank)'}"`
+  );
+
+  const agentName = [agent.firstName, agent.lastName].filter(Boolean).join(' ') || 'Agent';
+  const message = [
+    'An agent updated information in the Inspectology Agent Dashboard.',
+    '',
+    `Agent: ${agentName}`,
+    `Spectora connection ID: ${connectionId}`,
+    `Current Spectora email: ${agent.email || '(none)'}`,
+    '',
+    'Requested profile updates:',
+    ...changedLines,
+    '',
+    'Please review and update the agent record in Spectora as appropriate.'
+  ].join('\n');
+
+  const requestBody = JSON.stringify({
+    from: email.from,
+    to: [email.to],
+    subject: `Agent profile update requested: ${agentName}`,
+    text: message
+  });
+
+  const response = await requestJson(
+    'https://api.resend.com/emails',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${email.resendApiKey}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(requestBody)
+      },
+      timeout: 15_000
+    },
+    requestBody,
+    300_000
+  );
+
+  if (response.statusCode < 200 || response.statusCode > 299) {
+    return { sent: false, reason: 'provider_error' };
+  }
+
+  return { sent: true };
+}
+
+function openAiOutputText(payload) {
+  const parts = [];
+  for (const item of payload?.output || []) {
+    if (item?.type !== 'message') continue;
+    for (const content of item.content || []) {
+      if (content?.type === 'output_text' && content.text) parts.push(content.text);
+    }
+  }
+  return parts.join('\n').trim();
+}
+
+async function askOpenAiAboutReport(config, pdfBuffer, filename, question, history, inspection) {
+  if (!config.ai.apiKey) throw authError('Inspectology AI is not configured yet', 503);
+
+  const recentHistory = (Array.isArray(history) ? history : [])
+    .slice(-6)
+    .map(item => ({
+      role: item?.role === 'assistant' ? 'assistant' : 'user',
+      text: String(item?.text || '').slice(0, 2000)
+    }))
+    .filter(item => item.text);
+
+  const context = recentHistory.length
+    ? recentHistory.map(item => `${item.role === 'assistant' ? 'Previous answer' : 'Previous question'}: ${item.text}`).join('\n\n')
+    : 'No previous conversation context.';
+
+  const instructions = [
+    'You are Inspectology AI, a report-grounded assistant for a real estate agent.',
+    'Use only the attached Inspectology inspection report as the factual source for property-specific answers.',
+    'If the report does not state something, say that it is not stated in the report. Never guess.',
+    'Do not advise whether a buyer should purchase, cancel, renegotiate, or make a legal or contractual decision.',
+    'Do not invent repair prices, urgency, code violations, diagnoses, contractor conclusions, or severity labels that are not supported by the report.',
+    'Clearly distinguish the inspector\'s written observation or recommendation from your own plain-language explanation.',
+    'Whenever possible, cite the exact report section number and heading, such as "12.2.1 Attic - Structure & Sheathing".',
+    'For broad questions such as major concerns, key findings, biggest issues, or summary: group related findings into short categories that fit the actual report, such as Water / Moisture, Electrical / Safety, Roof / Exterior, Plumbing, HVAC, or Other Notable Findings. Only include categories that are relevant.',
+    'Within those grouped summaries, place first the findings that the report itself describes with stronger safety, active leak, fire, shock, moisture, inoperable safety mechanism, missing safety device, or similar language. Do not independently label an item major or severe if the report does not support that characterization.',
+    'Avoid repeating the same defect in multiple places unless the different locations materially matter.',
+    'Keep grouped summaries concise. Prefer the most useful 6 to 10 findings, then mention that additional documented items are available in the full report if relevant.',
+    'Use simple plain-text headings and bullet points. Do not use markdown bold markers, tables, or code formatting.',
+    'Keep answers useful to an agent, concise, and easy to relay to a client.',
+    'End broad summaries with a brief reminder that the listed items come from the inspector\'s report and that the complete report, photos, limitations, and recommendations should be reviewed for context.'
+  ].join(' ');
+
+  const requestBody = JSON.stringify({
+    model: config.ai.model,
+    store: false,
+    max_output_tokens: 1100,
+    instructions,
+    input: [{
+      role: 'user',
+      content: [
+        {
+          type: 'input_file',
+          filename: String(filename || 'inspection-report.pdf').slice(0, 180),
+          file_data: `data:application/pdf;base64,${pdfBuffer.toString('base64')}`
+        },
+        {
+          type: 'input_text',
+          text: [
+            `Inspection: ${inspection.location || 'Property'}`,
+            `Inspection date: ${inspection.date || ''}`,
+            context,
+            `Current question: ${question}`
+          ].join('\n\n')
+        }
+      ]
+    }]
+  });
+
+  const response = await requestJson(
+    'https://api.openai.com/v1/responses',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.ai.apiKey}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(requestBody)
+      },
+      timeout: 45_000
+    },
+    requestBody,
+    2_000_000
+  );
+
+  if (response.statusCode < 200 || response.statusCode > 299 || !response.json) {
+    const message = response.json?.error?.message || `OpenAI returned HTTP ${response.statusCode}`;
+    throw new Error(message);
+  }
+
+  const answer = openAiOutputText(response.json);
+  if (!answer) throw new Error('Inspectology AI returned an empty answer');
+
+  return {
+    answer,
+    model: response.json.model || config.ai.model,
+    usage: response.json.usage || null
+  };
+}
+
 function assertCompanyScope(records, companyId) {
   for (const record of records) {
     const attributeId = record?.attributes?.company_id;
@@ -530,13 +775,167 @@ function mapInspection(insp) {
     : [street, locality].filter(Boolean).join(', ') || 'Location unavailable';
 
   return {
+    id: String(insp.id || ''),
     date,
+    datetime: attrs.datetime || '',
     location,
     services: [attrs.service_names, attrs.service_add_on_names].filter(Boolean).join(' + '),
     inspector: attrs.inspector_name || '',
     status: attrs.canceled_at ? 'Canceled' : (attrs.published_at ? 'Report Published' : 'Scheduled'),
-    published: Boolean(attrs.published_at)
+    published: Boolean(attrs.published_at),
+    canceled: Boolean(attrs.canceled_at),
+    spectoraUrl: attrs.slug
+      ? `https://portal.spectora.com/inspection/${encodeURIComponent(String(attrs.slug))}`
+      : ''
   };
+}
+
+function validEmail(value) {
+  const email = String(value || '').trim();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : '';
+}
+
+function collectStringFields(value, prefix = '', depth = 0, output = []) {
+  if (depth > 4 || value == null) return output;
+
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    output.push({ path: prefix, value: String(value) });
+    return output;
+  }
+
+  if (Array.isArray(value)) {
+    value.slice(0, 20).forEach((item, index) =>
+      collectStringFields(item, `${prefix}[${index}]`, depth + 1, output)
+    );
+    return output;
+  }
+
+  if (typeof value === 'object') {
+    Object.entries(value).slice(0, 80).forEach(([key, child]) => {
+      const path = prefix ? `${prefix}.${key}` : key;
+      collectStringFields(child, path, depth + 1, output);
+    });
+  }
+
+  return output;
+}
+
+function resourceDisplayName(resource, fallback = '') {
+  const attrs = resource?.attributes || {};
+  const direct = [
+    attrs.inspector_name,
+    attrs.full_name,
+    attrs.name,
+    [attrs.first_name, attrs.last_name].filter(Boolean).join(' ')
+  ].find(value => typeof value === 'string' && value.trim());
+
+  return String(direct || fallback || '').trim();
+}
+
+const INSPECTOR_EMAIL_DIRECTORY = Object.freeze({
+  'tiffany mercer': { name: 'Tiffany Mercer', email: 'tmercer@inspect-ology.com' },
+  'joe heyne': { name: 'Joe Heyne', email: 'jheyne@inspect-ology.com' },
+  'gregg rhodes': { name: 'Gregg Rhodes', email: 'grhodes@inspect-ology.com' },
+  'mark kahan': { name: 'Mark Kahan', email: 'mkahan@inspect-ology.com' },
+  'nick dinsmore': { name: 'Nick Dinsmore', email: 'ndinsmore@inspect-ology.com' },
+  'jordan bird': { name: 'Jordan Bird', email: 'jordanbird@inspect-ology.com' }
+});
+
+function fallbackInspectorContacts(detail) {
+  const inspectorName = String(detail?.data?.attributes?.inspector_name || '').trim().toLowerCase();
+  if (!inspectorName) return [];
+
+  return Object.entries(INSPECTOR_EMAIL_DIRECTORY)
+    .filter(([name]) => inspectorName.includes(name))
+    .map(([, contact]) => ({ ...contact }));
+}
+
+function mergeInspectorContacts(primary, fallback) {
+  const merged = [];
+  const seen = new Set();
+
+  for (const contact of [...(primary || []), ...(fallback || [])]) {
+    const email = validEmail(contact?.email);
+    if (!email) continue;
+    const key = email.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push({
+      name: String(contact?.name || '').trim(),
+      email
+    });
+  }
+
+  return merged.slice(0, 8);
+}
+
+function inspectorContactsFromDetail(detail) {
+  const inspection = detail?.data || {};
+  const fallbackName = String(inspection.attributes?.inspector_name || '').trim();
+  const contacts = [];
+  const seenEmails = new Set();
+
+  const addFromFields = (fields, name, requireInspectorPath = false) => {
+    for (const field of fields) {
+      if (!/email/i.test(field.path)) continue;
+      if (requireInspectorPath && !/inspector/i.test(field.path)) continue;
+      const email = validEmail(field.value);
+      if (!email || seenEmails.has(email.toLowerCase())) continue;
+      seenEmails.add(email.toLowerCase());
+      contacts.push({ name: name || fallbackName, email });
+    }
+  };
+
+  addFromFields(
+    collectStringFields(inspection.attributes || {}),
+    fallbackName,
+    true
+  );
+
+  const assignmentRefs = Array.isArray(inspection.relationships?.assignments?.data)
+    ? inspection.relationships.assignments.data
+    : [];
+  const assignmentKeys = new Set(
+    assignmentRefs.map(ref => `${String(ref?.type || '')}:${String(ref?.id || '')}`)
+  );
+  const included = Array.isArray(detail?.included) ? detail.included : [];
+  const byKey = new Map(included.map(resource => [
+    `${String(resource?.type || '')}:${String(resource?.id || '')}`,
+    resource
+  ]));
+
+  const assignments = included.filter(resource =>
+    resource?.type === 'assignment' &&
+    assignmentKeys.has(`assignment:${String(resource.id || '')}`)
+  );
+
+  for (const assignment of assignments) {
+    const assignmentName = resourceDisplayName(assignment, fallbackName);
+    addFromFields(
+      collectStringFields(assignment.attributes || {}),
+      assignmentName,
+      false
+    );
+
+    for (const relationship of Object.values(assignment.relationships || {})) {
+      const data = relationship?.data;
+      const refs = Array.isArray(data) ? data : (data ? [data] : []);
+
+      for (const ref of refs) {
+        const type = String(ref?.type || '');
+        if (!/(inspector|user|profile|employee|staff)/i.test(type)) continue;
+        const related = byKey.get(`${type}:${String(ref?.id || '')}`);
+        if (!related) continue;
+        addFromFields(
+          collectStringFields(related.attributes || {}),
+          resourceDisplayName(related, assignmentName),
+          false
+        );
+      }
+    }
+  }
+
+  return contacts.slice(0, 8);
 }
 
 function readUpstreamJson(response, maxBytes) {
@@ -1039,6 +1438,24 @@ function createPortal(options = {}) {
   const upstreamGet = options.upstreamGet || createHttpsUpstream(config);
   const log = options.log || (entry => process.stdout.write(`${JSON.stringify(entry)}\n`));
   const allowRequest = createRateLimiter(config, nowMs);
+  const allowAiRequest = createRateLimiter({
+    ...config,
+    rateLimitMax: config.ai.rateLimitMax,
+    rateLimitWindowMs: config.ai.rateLimitWindowMs
+  }, nowMs);
+
+  function authorizeAgentRequest(req, connectionId, options = {}) {
+    if (config.mode !== 'live') return { grant: 'demo' };
+
+    validatedPositiveDecimalId(connectionId, 'Spectora connection ID');
+    const grant = bearerToken(req);
+    verifyGrant(grant, connectionId, config.signingSecret, { now: nowSeconds() });
+
+    const key = crypto.createHash('sha256').update(`${grant}:${connectionId}`).digest('hex');
+    const allowed = options.ai ? allowAiRequest(key) : allowRequest(key);
+    if (!allowed) throw authError(options.ai ? 'AI request rate limit exceeded' : 'Rate limit exceeded', 429);
+    return { grant };
+  }
 
   async function fetchUpstream(stage, endpoint) {
     try {
@@ -1108,7 +1525,7 @@ function createPortal(options = {}) {
   function sendStatic(res, pathname) {
     const requested = pathname === '/admin' || pathname.startsWith('/admin/')
       ? '/admin.html'
-      : (pathname === '/' || pathname.startsWith('/agent/') ? '/index.html' : pathname);
+      : (pathname === '/' || pathname === '/design-preview' || pathname.startsWith('/agent/') ? '/index.html' : pathname);
     let decoded;
     try { decoded = decodeURIComponent(requested); } catch { sendJson(res, 400, { error: 'Malformed URL' }); return; }
     if (decoded.includes('\0') || decoded.includes('\\') || decoded.split('/').includes('..')) { sendJson(res, 403, { error: 'Forbidden' }); return; }
@@ -1132,6 +1549,31 @@ function createPortal(options = {}) {
       if (req.method === 'GET' && pathname === '/api/health') {
         sendJson(res, 200, { status: 'ok', service: 'spectora-agent-portal', mode: config.mode }); status = 200; return;
       }
+      if (req.method === 'GET' && pathname === '/api/design-preview') {
+        const targetEnv = String(process.env.VERCEL_TARGET_ENV || process.env.VERCEL_ENV || '').toLowerCase();
+        if (targetEnv === 'production') {
+          sendJson(res, 404, { error: 'Not found' }); status = 404; return;
+        }
+        const sample = applyCustomization(readSampleAgent(), config.branding, config.demoAgent, config.demoTier);
+        const previewUpcoming = {
+          id: 'demo-upcoming-1009',
+          date: '2026-09-28',
+          datetime: '2026-09-28T09:00:00-04:00',
+          address: '123 Main Street, Westminster, MD 21157',
+          location: '123 Main Street, Westminster, MD 21157',
+          services: 'Home Inspection + Radon Testing',
+          inspector: 'Inspectology Team',
+          status: 'Scheduled',
+          published: false,
+          canceled: false,
+          spectoraUrl: 'https://portal.spectora.com/inspection/design-preview'
+        };
+        sendJson(res, 200, {
+          ...sample,
+          inspections: [previewUpcoming, ...(sample.inspections || [])],
+          meta: { mode: 'design-preview' }
+        }); status = 200; return;
+      }
       if (pathname.startsWith('/api/admin/')) {
         if (!config.adminAccessKey) {
           sendJson(res, 503, { error: 'Admin access is not configured' }); status = 503; return;
@@ -1140,7 +1582,36 @@ function createPortal(options = {}) {
           sendJson(res, 401, { error: 'Invalid admin access key' }); status = 401; return;
         }
         if (req.method === 'GET' && pathname === '/api/admin/session') {
-          sendJson(res, 200, { status: 'ok' }); status = 200; return;
+          const drive = config.googleDrive || {};
+          const profileEmail = config.profileNotifications || {};
+          sendJson(res, 200, {
+            status: 'ok',
+            readiness: {
+              environment: config.deploymentEnvironment || config.mode || 'unknown',
+              spectora: Boolean(
+                config.mode === 'live' &&
+                config.apiKey &&
+                config.companyId &&
+                config.signingSecret
+              ),
+              googleDrive: Boolean(
+                drive.projectNumber &&
+                drive.poolId &&
+                drive.providerId &&
+                drive.serviceAccountEmail &&
+                drive.backupFolderId
+              ),
+              openAi: Boolean(config.ai?.apiKey),
+              profileEmail: Boolean(
+                profileEmail.resendApiKey &&
+                profileEmail.to &&
+                profileEmail.from
+              ),
+              adminAccess: Boolean(config.adminAccessKey)
+            }
+          });
+          status = 200;
+          return;
         }
         if (req.method === 'GET' && pathname === '/api/admin/agents') {
           const search = String(url.searchParams.get('q') || '').trim();
@@ -1436,23 +1907,254 @@ function createPortal(options = {}) {
         }
         sendJson(res, 405, { error: 'Admin operation not allowed' }); status = 405; return;
       }
-      if (req.method === 'GET' && pathname.startsWith('/api/agent/')) {
-        const connectionId = pathname.slice('/api/agent/'.length).split('/')[0];
+      if (pathname.startsWith('/api/agent/')) {
+        const parts = pathname.slice('/api/agent/'.length).split('/').filter(Boolean);
+        const connectionId = parts[0] || '';
+        const operation = parts[1] || '';
         if (!connectionId) { sendJson(res, 400, { error: 'Missing connection ID' }); status = 400; return; }
-        if (config.mode === 'live') {
-          let grant;
-          try {
-            validatedPositiveDecimalId(connectionId, 'Spectora connection ID');
-            grant = bearerToken(req);
-            verifyGrant(grant, connectionId, config.signingSecret, { now: nowSeconds() });
-          }
-          catch (error) { status = error.statusCode || 401; sendJson(res, status, { error: error.message }); return; }
-          const key = crypto.createHash('sha256').update(`${grant}:${connectionId}`).digest('hex');
-          if (!allowRequest(key)) { sendJson(res, 429, { error: 'Rate limit exceeded' }); status = 429; return; }
+
+        try {
+          authorizeAgentRequest(req, connectionId, { ai: operation === 'ask-report' });
+        } catch (error) {
+          status = error.statusCode || 401;
+          sendJson(res, status, { error: error.message });
+          return;
         }
-        const payload = await getAgentPayload(connectionId);
-        if (!payload) { sendJson(res, 404, { error: 'Agent not found' }); status = 404; return; }
-        sendJson(res, 200, payload); status = 200; return;
+
+        if (req.method === 'GET' && operation === '') {
+          const payload = await getAgentPayload(connectionId);
+          if (!payload) { sendJson(res, 404, { error: 'Agent not found' }); status = 404; return; }
+          sendJson(res, 200, payload); status = 200; return;
+        }
+
+        if (req.method === 'GET' && operation === 'inspections-search') {
+          const search = String(url.searchParams.get('q') || '').trim();
+          if (search.length < 2 || search.length > 120) {
+            sendJson(res, 400, { error: 'Search must be between 2 and 120 characters' }); status = 400; return;
+          }
+
+          if (config.mode === 'demo') {
+            const sample = applyCustomization(readSampleAgent(), config.branding, config.demoAgent, config.demoTier);
+            const normalized = search.toLowerCase();
+            const matches = (sample.inspections || []).filter(item =>
+              [item.address, item.location, item.city, item.state, item.date, item.inspector, item.services]
+                .filter(Boolean)
+                .some(value => String(value).toLowerCase().includes(normalized))
+            );
+            sendJson(res, 200, { inspections: matches.slice(0, 50) }); status = 200; return;
+          }
+
+          const inspections = await fetchUpstream('Inspection search', query('/v2/inspections', {
+            'filter[connection_id]': connectionId,
+            'filter[address]': search,
+            include: 'buying_agent,selling_agent,company',
+            sort: '-datetime',
+            'page[size]': '50'
+          }));
+
+          if (!Array.isArray(inspections.data)) throw authError('Upstream inspection search data missing', 502);
+          assertInspectionScope(inspections.data, config.companyId, connectionId);
+
+          sendJson(res, 200, {
+            inspections: inspections.data.map(mapInspection)
+          });
+          status = 200;
+          return;
+        }
+
+        if (req.method === 'GET' && operation === 'inspector-contact') {
+          const inspectionId = String(url.searchParams.get('inspectionId') || '').trim();
+          if (!inspectionId) {
+            sendJson(res, 400, { error: 'Inspection ID is required' }); status = 400; return;
+          }
+
+          if (config.mode === 'demo') {
+            sendJson(res, 404, { error: 'Inspector contact is unavailable in demo mode' }); status = 404; return;
+          }
+
+          const detail = await fetchUpstream(
+            'Inspection inspector lookup',
+            `/v2/inspections/${encodeURIComponent(inspectionId)}?include=assignments,buying_agent,selling_agent,company`
+          );
+
+          assertRecordId(detail.data, inspectionId, 'inspection');
+          assertInspectionScope([detail.data], config.companyId, connectionId);
+
+          const contacts = mergeInspectorContacts(
+            inspectorContactsFromDetail(detail),
+            fallbackInspectorContacts(detail)
+          );
+          if (!contacts.length) {
+            sendJson(res, 404, {
+              error: 'Inspector email is not available for this inspection',
+              inspectorName: String(detail.data?.attributes?.inspector_name || '')
+            });
+            status = 404;
+            return;
+          }
+
+          sendJson(res, 200, {
+            contacts,
+            inspectorName: String(detail.data?.attributes?.inspector_name || '')
+          });
+          status = 200;
+          return;
+        }
+
+        if (req.method === 'GET' && operation === 'report-status') {
+          const inspectionId = String(url.searchParams.get('inspectionId') || '').trim();
+          const payload = await getAgentPayload(connectionId);
+          if (!payload) { sendJson(res, 404, { error: 'Agent not found' }); status = 404; return; }
+
+          const inspection = (payload.inspections || []).find(item => String(item.id || '') === inspectionId);
+          if (!inspection || !inspection.published) {
+            sendJson(res, 404, { error: 'Published inspection not found for this agent' }); status = 404; return;
+          }
+
+          if (config.mode === 'demo') {
+            sendJson(res, 200, { available: true, demo: true, inspection }); status = 200; return;
+          }
+
+          const backup = await findGoogleDriveBackup(
+            config,
+            String(req.headers['x-vercel-oidc-token'] || ''),
+            inspection.location,
+            inspection.date
+          );
+
+          sendJson(res, 200, {
+            available: Boolean(backup.fullReport),
+            folderFound: Boolean(backup.folder),
+            reportName: backup.fullReport?.name || '',
+            inspection
+          });
+          status = 200;
+          return;
+        }
+
+
+        if (req.method === 'POST' && operation === 'profile-change') {
+          const body = await readJsonBody(req, 16_000);
+          const incoming = body.profile && typeof body.profile === 'object' ? body.profile : {};
+          const payload = await getAgentPayload(connectionId);
+          if (!payload) { sendJson(res, 404, { error: 'Agent not found' }); status = 404; return; }
+
+          const allowedFields = ['firstName', 'lastName', 'agency', 'phone', 'email', 'city', 'state'];
+          const changes = [];
+
+          for (const field of allowedFields) {
+            if (!Object.hasOwn(incoming, field)) continue;
+            const oldValue = String(payload.agent?.[field] || '').trim();
+            const newValue = String(incoming[field] || '').trim().slice(0, 240);
+            if (oldValue !== newValue) changes.push({ field, oldValue, newValue });
+          }
+
+          if (!changes.length) {
+            sendJson(res, 200, { notificationSent: false, noChanges: true, changedFields: [] });
+            status = 200;
+            return;
+          }
+
+          if (config.mode === 'demo') {
+            sendJson(res, 200, {
+              notificationSent: true,
+              demo: true,
+              changedFields: changes.map(change => change.field)
+            });
+            status = 200;
+            return;
+          }
+
+          const notification = await sendProfileChangeNotification(
+            config,
+            connectionId,
+            payload.agent,
+            changes
+          );
+
+          sendJson(res, 200, {
+            notificationSent: notification.sent,
+            notificationStatus: notification.reason || 'sent',
+            changedFields: changes.map(change => change.field)
+          });
+          status = 200;
+          return;
+        }
+
+        if (req.method === 'POST' && operation === 'ask-report') {
+          const body = await readJsonBody(req, 24_000);
+          const inspectionId = String(body.inspectionId || '').trim();
+          const question = String(body.question || '').trim();
+          const history = Array.isArray(body.history) ? body.history : [];
+
+          if (!question || question.length > 1200) {
+            sendJson(res, 400, { error: 'Question must be between 1 and 1200 characters' }); status = 400; return;
+          }
+
+          const payload = await getAgentPayload(connectionId);
+          if (!payload) { sendJson(res, 404, { error: 'Agent not found' }); status = 404; return; }
+          const inspection = (payload.inspections || []).find(item => String(item.id || '') === inspectionId);
+          if (!inspection || !inspection.published) {
+            sendJson(res, 404, { error: 'Published inspection not found for this agent' }); status = 404; return;
+          }
+
+          if (config.mode === 'demo') {
+            sendJson(res, 200, {
+              answer: 'Demo mode confirms the Ask Inspectology AI interface is working. Live answers will be grounded only in the selected inspection report and will cite report sections when available.',
+              demo: true
+            });
+            status = 200;
+            return;
+          }
+
+          const backup = await findGoogleDriveBackup(
+            config,
+            String(req.headers['x-vercel-oidc-token'] || ''),
+            inspection.location,
+            inspection.date
+          );
+
+          if (!backup.folder) {
+            sendJson(res, 404, { error: 'Spectora backup folder is not available for this inspection yet' }); status = 404; return;
+          }
+          if (!backup.fullReport) {
+            sendJson(res, 404, { error: 'Full inspection report PDF is not available to Inspectology AI yet' }); status = 404; return;
+          }
+
+          let pdf;
+          try {
+            pdf = await googleDriveDownloadFile(backup.token, backup.fullReport.id);
+          } catch (error) {
+            error.safeDetail = `Report download failed: ${error.message}`;
+            throw error;
+          }
+
+          let result;
+          try {
+            result = await askOpenAiAboutReport(
+              config,
+              pdf,
+              backup.fullReport.name,
+              question,
+              history,
+              inspection
+            );
+          } catch (error) {
+            error.safeDetail = `OpenAI request failed: ${error.message}`;
+            throw error;
+          }
+
+          sendJson(res, 200, {
+            answer: result.answer,
+            model: result.model,
+            usage: result.usage,
+            reportName: backup.fullReport.name
+          });
+          status = 200;
+          return;
+        }
+
+        sendJson(res, 405, { error: 'Agent operation not allowed' }); status = 405; return;
       }
       if (req.method === 'GET') { sendStatic(res, pathname); status = res.statusCode || res.status || 200; return; }
       sendJson(res, 405, { error: 'Method not allowed' }); status = 405;
