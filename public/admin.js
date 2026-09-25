@@ -274,11 +274,24 @@ if (ivyAttachmentTypeScan) {
       const mappings = Array.isArray(body.mappings) ? body.mappings : [];
       if (ivyAttachmentTypeResults) {
         for (const item of mappings) {
+          const types = item.attachmentTypes?.length
+            ? item.attachmentTypes.join(', ')
+            : 'Not found in scanned attachments';
+          const examples = Array.isArray(item.examples) ? item.examples : [];
+          const exampleText = examples.length
+            ? examples.map(example =>
+                [example.name, example.filename, example.attachmentType]
+                  .filter(Boolean)
+                  .join(' | ')
+              ).join(' ; ')
+            : '';
+          const children = [
+            el('strong', { text: item.name }),
+            el('span', { text: types })
+          ];
+          if (exampleText) children.push(el('small', { text: exampleText }));
           ivyAttachmentTypeResults.append(
-            el('div', { class: 'report-test-result' }, [
-              el('strong', { text: item.name }),
-              el('span', { text: item.attachmentTypes?.length ? item.attachmentTypes.join(', ') : 'Not found in scanned attachments' })
-            ])
+            el('div', { class: 'report-test-result' }, children)
           );
         }
       }
