@@ -21,6 +21,9 @@ const driveBackupDate = document.getElementById('driveBackupDate');
 const driveBackupMessage = document.getElementById('driveBackupMessage');
 const driveBackupResults = document.getElementById('driveBackupResults');
 const launchReadinessResults = document.getElementById('launchReadinessResults');
+const ivyOpsResults = document.getElementById('ivyOpsResults');
+const ivySheetTest = document.getElementById('ivySheetTest');
+const ivyOpsMessage = document.getElementById('ivyOpsMessage');
 
 let adminKey = sessionStorage.getItem('inspectologyAdminKey') || '';
 let pendingChallenge = sessionStorage.getItem('inspectologyAdminChallenge') || '';
@@ -119,11 +122,44 @@ function renderLaunchReadiness(readiness = {}) {
   }
 }
 
+function renderIvyOperations(ivy = {}) {
+  if (!ivyOpsResults) return;
+  ivyOpsResults.replaceChildren();
+
+  const items = [
+    ['Identity', ivy.email || 'ivy@inspect-ology.com', Boolean(ivy.email)],
+    ['Operations Sheet', ivy.spreadsheetConfigured ? 'Configured' : 'Missing', Boolean(ivy.spreadsheetConfigured)],
+    ['Inbound Webhook', ivy.inboundWebhookConfigured ? 'Configured' : 'Missing', Boolean(ivy.inboundWebhookConfigured)],
+    ['Resend API', ivy.resendApiConfigured ? 'Configured' : 'Missing', Boolean(ivy.resendApiConfigured)],
+    ['Spectora Upload', ivy.autoUpload ? 'LIVE' : 'Dry Run', true]
+  ];
+
+  for (const [label, value, ready] of items) {
+    ivyOpsResults.append(
+      el('div', { class: `launch-readiness-item ${ready ? 'launch-ready' : 'launch-missing'}` }, [
+        el('span', { text: label }),
+        el('strong', { text: value })
+      ])
+    );
+  }
+}
+
+async function loadIvyOperations() {
+  if (!ivyOpsResults) return;
+  try {
+    const body = await api('/api/admin/ops/status');
+    renderIvyOperations(body.ivy || {});
+  } catch (error) {
+    ivyOpsMessage.textContent = error.message;
+  }
+}
+
 async function verifyAdmin() {
   const body = await api('/api/admin/session');
   if (adminKey) sessionStorage.setItem('inspectologyAdminKey', adminKey);
   renderLaunchReadiness(body.readiness || {});
   showSearch(body);
+  await loadIvyOperations();
   return body;
 }
 
@@ -209,6 +245,22 @@ fallbackLoginForm.addEventListener('submit', async event => {
     loginMessage.textContent = error.message;
   }
 });
+
+if (ivySheetTest) {
+  ivySheetTest.addEventListener('click', async () => {
+    ivySheetTest.disabled = true;
+    ivyOpsMessage.textContent = 'Testing Google Sheet connection...';
+    try {
+      const body = await api('/api/admin/ops/sheet-test');
+      ivyOpsMessage.textContent =
+        `Connected. Found ${body.vendorRows || 0} configured vendor rows in the Operations Sheet.`;
+    } catch (error) {
+      ivyOpsMessage.textContent = error.message;
+    } finally {
+      ivySheetTest.disabled = false;
+    }
+  });
+}
 
 searchForm.addEventListener('submit', async event => {
   event.preventDefault();
