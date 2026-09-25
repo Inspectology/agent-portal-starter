@@ -2646,3 +2646,90 @@ input:focus-visible,
   }
 }
 
+/* Admin email-code sign in */
+.admin-login-card {
+  width: min(520px, 100%);
+  margin: 0 auto;
+}
+
+.admin-login-kicker {
+  display: inline-block;
+  margin-bottom: 8px;
+  color: var(--brand);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.admin-code-intro {
+  display: grid;
+  gap: 3px;
+  padding: 12px 14px;
+  border: 1px solid rgba(169, 5, 51, 0.18);
+  border-radius: 12px;
+  background: rgba(169, 5, 51, 0.04);
+}
+
+.admin-code-intro strong {
+  font-size: 13px;
+}
+
+.admin-code-intro span {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+#adminCode {
+  font-size: 24px;
+  font-weight: 850;
+  letter-spacing: 0.22em;
+  text-align: center;
+}
+
+.admin-emergency {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.admin-emergency summary {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.admin-emergency > p {
+  margin: 9px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.admin-session-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.admin-signed-in-as {
+  max-width: 260px;
+  color: var(--muted);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 620px) {
+  .admin-session-actions {
+    align-items: flex-end;
+    flex-direction: column;
+  }
+
+  .admin-signed-in-as {
+    max-width: 190px;
+  }
+}
+
