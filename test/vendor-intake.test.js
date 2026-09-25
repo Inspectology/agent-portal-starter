@@ -3,8 +3,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
+  classifyDocument,
   classifyVendor,
   createVendorIntakePlan,
+  extractInvoiceData,
   extractStreetCandidates,
   normalizeStreet,
   selectInspectionMatch
@@ -103,3 +105,74 @@ test('creates upload plan only when address, vendor, type and duplicate checks p
   assert.equal(plan.attachmentType, 'water');
   assert.equal(plan.inspection.id, '9');
 });
+
+test('recognizes direct Young Septic report sender', () => {
+  const result = classifyVendor({
+    from: 'Anna Schneider <anna@youngseptic.com>',
+    subject: 'Septic Inspection Report for 1349 Quaker Church Road, Street, MD, 21154',
+    filenames: ['1349 Quaker Church Road.pdf']
+  });
+  assert.equal(result.vendor.key, 'septic');
+});
+
+test('recognizes Atlantic Blue lab water result pattern', () => {
+  const result = classifyVendor({
+    from: 'AB Lab <ablab@atlanticblue.net>',
+    subject: 'AB - Water test results',
+    body: 'Attached you will find the water test results for 17505 Pretty Boy Dam Road.',
+    filenames: ['17505 PRETTYBOY DAM ROAD WATER TEST RESULTS - AB - FVAL.pdf']
+  });
+  assert.equal(result.vendor.key, 'well_water');
+  assert.equal(classifyDocument({
+    subject: 'AB - Water test results',
+    filenames: ['17505 PRETTYBOY DAM ROAD WATER TEST RESULTS - AB - FVAL.pdf']
+  }, result.vendor).type, 'report');
+});
+
+test('Lynn invoice is ledger-only and not an upload', () => {
+  const message = {
+    from: 'lynnpestmgmt@gmail.com',
+    subject: 'Invoice 9-3792 from L&J Lynn LLC',
+    body: 'Invoice Due: Tue, 09/22/2026 9-3792 Amount Due: $100.00',
+    attachmentText: 'Invoice #\\n9-3792\\nProject\\n948 Glenangus Dr 21015\\nBalance Due\\n$100.00',
+    filenames: ['Inv_93792_from_LJ_Lynn_LLC_15676.pdf']
+  };
+  const vendor = classifyVendor(message).vendor;
+  assert.equal(classifyDocument(message, vendor).type, 'invoice');
+
+  const plan = createVendorIntakePlan({
+    message,
+    inspections: []
+  });
+  assert.equal(plan.action, 'ledger');
+  assert.equal(plan.invoice.amount, 100);
+  assert.equal(plan.invoice.project, '948 Glenangus Dr 21015');
+});
+
+test('Atlantic Blue booking disclaimer is ignored', () => {
+  const message = {
+    from: 'Kaitlyn <kaitlyn@atlanticblue.net>',
+    subject: 'Booking Confirmation - 17505 Pretty Boy Dam Road',
+    body: 'You have appointments with Atlantic Blue and Young Septic.',
+    filenames: ['Well Yield Disclaimer.pdf']
+  };
+  const classified = classifyVendor(message);
+  const document = classifyDocument(message, classified.vendor);
+  assert.equal(document.type, 'ignore');
+
+  const plan = createVendorIntakePlan({
+    message,
+    inspections: []
+  });
+  assert.equal(plan.action, 'ignore');
+});
+
+test('extracts invoice amount, project and invoice number from parsed PDF text', () => {
+  const invoice = extractInvoiceData(
+    'Invoice\\nDate\\n9/22/2026\\nInvoice #\\n9-3792\\nProject\\n948 Glenangus Dr 21015\\nBalance Due\\n$100.00'
+  );
+  assert.equal(invoice.amount, 100);
+  assert.equal(invoice.project, '948 Glenangus Dr 21015');
+  assert.equal(invoice.invoiceNumber, '9-3792');
+});
+
