@@ -109,6 +109,22 @@ function createConfig(env = process.env) {
     companyId: mode === 'live' ? validatedPositiveDecimalId(env.SPECTORA_COMPANY_ID, 'SPECTORA_COMPANY_ID') : '',
     signingSecret: env.PORTAL_SIGNING_SECRET || '',
     adminAccessKey: String(env.ADMIN_ACCESS_KEY || '').trim(),
+    adminAuth: {
+      allowedEmails: String(
+        env.ADMIN_ALLOWED_EMAILS ||
+        'jordanbird@inspect-ology.com,jvandenelzen@inspect-ology.com'
+      )
+        .split(',')
+        .map(value => value.trim().toLowerCase())
+        .filter(Boolean),
+      securityEmail: String(env.ADMIN_SECURITY_EMAIL_TO || 'info@inspect-ology.com').trim().toLowerCase(),
+      from: String(env.ADMIN_AUTH_EMAIL_FROM || env.PROFILE_CHANGE_EMAIL_FROM || '').trim(),
+      resendApiKey: String(env.RESEND_API_KEY || '').trim(),
+      codeTtlSeconds: boundedInteger(env.ADMIN_CODE_TTL_SECONDS, 600, 300, 1800),
+      sessionTtlSeconds: boundedInteger(env.ADMIN_SESSION_TTL_SECONDS, 43_200, 1800, 86_400),
+      rateLimitMax: boundedInteger(env.ADMIN_AUTH_RATE_LIMIT_MAX, 5, 1, 20),
+      rateLimitWindowMs: boundedInteger(env.ADMIN_AUTH_RATE_LIMIT_WINDOW_MS, 600_000, 60_000, 3_600_000)
+    },
     ai: {
       apiKey: String(env.OPENAI_API_KEY || '').trim(),
       model: String(env.OPENAI_MODEL || 'gpt-5.6-luna').trim(),
@@ -247,8 +263,12 @@ function headers(extra = {}) {
   return { ...SECURITY_HEADERS, ...extra };
 }
 
-function sendJson(res, status, payload) {
-  res.writeHead(status, headers({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }));
+function sendJson(res, status, payload, extraHeaders = {}) {
+  res.writeHead(status, headers({
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+    ...extraHeaders
+  }));
   res.end(JSON.stringify(payload));
 }
 
@@ -263,8 +283,160 @@ function constantTimeTextEqual(left, right) {
   return a.length > 0 && a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+const ADMIN_SESSION_COOKIE = '__Host-inspectology_admin';
+
+function adminAuthKey(config) {
+  if (Buffer.byteLength(config.signingSecret || '', 'utf8') < 32) {
+    throw authError('Admin email authentication is not configured', 503);
+  }
+  return crypto.createHmac('sha256', config.signingSecret)
+    .update('inspectology-admin-auth-v1')
+    .digest();
+}
+
+function adminTokenSignature(encodedPayload, config, purpose) {
+  return crypto.createHmac('sha256', adminAuthKey(config))
+    .update(`${purpose}.${encodedPayload}`)
+    .digest('base64url');
+}
+
+function createAdminToken(payload, config, purpose) {
+  const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  return `${encoded}.${adminTokenSignature(encoded, config, purpose)}`;
+}
+
+function verifyAdminToken(token, config, purpose) {
+  const fail = () => { throw authError('Invalid or expired admin authentication', 401); };
+  if (typeof token !== 'string') fail();
+  const [encoded, suppliedSignature, extra] = token.split('.');
+  if (!encoded || !suppliedSignature || extra) fail();
+  const expected = Buffer.from(adminTokenSignature(encoded, config, purpose));
+  const supplied = Buffer.from(suppliedSignature);
+  if (expected.length !== supplied.length || !crypto.timingSafeEqual(expected, supplied)) fail();
+
+  let payload;
+  try { payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')); }
+  catch { fail(); }
+
+  const now = Math.floor(Date.now() / 1000);
+  if (!Number.isSafeInteger(payload?.exp) || payload.exp <= now) fail();
+  return payload;
+}
+
+function normalizedAdminEmail(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function adminEmailAllowed(config, email) {
+  return config.adminAuth.allowedEmails.includes(normalizedAdminEmail(email));
+}
+
+function createAdminChallenge(config, email, code) {
+  const normalizedEmail = normalizedAdminEmail(email);
+  const nonce = crypto.randomBytes(18).toString('base64url');
+  const codeDigest = crypto.createHmac('sha256', adminAuthKey(config))
+    .update(`admin-code:${nonce}:${normalizedEmail}:${code}`)
+    .digest('base64url');
+  const now = Math.floor(Date.now() / 1000);
+  return createAdminToken({
+    v: 1,
+    type: 'challenge',
+    email: normalizedEmail,
+    nonce,
+    codeDigest,
+    exp: now + config.adminAuth.codeTtlSeconds
+  }, config, 'challenge');
+}
+
+function verifyAdminChallenge(config, challenge, email, code) {
+  const payload = verifyAdminToken(challenge, config, 'challenge');
+  const normalizedEmail = normalizedAdminEmail(email);
+  if (
+    payload.v !== 1 ||
+    payload.type !== 'challenge' ||
+    payload.email !== normalizedEmail ||
+    !adminEmailAllowed(config, normalizedEmail) ||
+    !/^[0-9]{6}$/.test(String(code || ''))
+  ) {
+    throw authError('Invalid or expired sign-in code', 401);
+  }
+
+  const expectedDigest = crypto.createHmac('sha256', adminAuthKey(config))
+    .update(`admin-code:${payload.nonce}:${normalizedEmail}:${code}`)
+    .digest('base64url');
+
+  if (!constantTimeTextEqual(expectedDigest, payload.codeDigest)) {
+    throw authError('Invalid or expired sign-in code', 401);
+  }
+  return normalizedEmail;
+}
+
+function createAdminSession(config, email) {
+  const now = Math.floor(Date.now() / 1000);
+  return createAdminToken({
+    v: 1,
+    type: 'session',
+    email: normalizedAdminEmail(email),
+    exp: now + config.adminAuth.sessionTtlSeconds
+  }, config, 'session');
+}
+
+function cookieValue(req, name) {
+  const raw = String(req.headers.cookie || '');
+  for (const part of raw.split(';')) {
+    const index = part.indexOf('=');
+    if (index < 0) continue;
+    const key = part.slice(0, index).trim();
+    if (key === name) return part.slice(index + 1).trim();
+  }
+  return '';
+}
+
+function adminIdentity(req, config) {
+  if (constantTimeTextEqual(req.headers['x-admin-key'], config.adminAccessKey)) {
+    return { method: 'emergency-key', email: '' };
+  }
+
+  const token = cookieValue(req, ADMIN_SESSION_COOKIE);
+  if (!token) return null;
+
+  try {
+    const payload = verifyAdminToken(token, config, 'session');
+    if (
+      payload.v !== 1 ||
+      payload.type !== 'session' ||
+      !adminEmailAllowed(config, payload.email)
+    ) return null;
+    return { method: 'email-code', email: payload.email };
+  } catch {
+    return null;
+  }
+}
+
 function adminAuthorized(req, config) {
-  return constantTimeTextEqual(req.headers['x-admin-key'], config.adminAccessKey);
+  return Boolean(adminIdentity(req, config));
+}
+
+function adminSessionCookie(config, token) {
+  return [
+    `${ADMIN_SESSION_COOKIE}=${token}`,
+    'Path=/',
+    'HttpOnly',
+    'Secure',
+    'SameSite=Strict',
+    `Max-Age=${config.adminAuth.sessionTtlSeconds}`
+  ].join('; ');
+}
+
+function clearAdminSessionCookie() {
+  return [
+    `${ADMIN_SESSION_COOKIE}=`,
+    'Path=/',
+    'HttpOnly',
+    'Secure',
+    'SameSite=Strict',
+    'Max-Age=0'
+  ].join('; ');
 }
 
 function readJsonBody(req, maxBytes = 16_384) {
@@ -531,6 +703,75 @@ function googleDriveDownloadFile(accessToken, fileId, maxBytes = 30_000_000) {
     });
     request.on('timeout', () => request.destroy(new Error('Google Drive file download timed out')));
     request.on('error', reject);
+  });
+}
+
+async function sendResendTextEmail({ apiKey, from, to, subject, text }) {
+  if (!apiKey || !from || !to) return { sent: false, reason: 'not_configured' };
+
+  const requestBody = JSON.stringify({
+    from,
+    to: [to],
+    subject,
+    text
+  });
+
+  const response = await requestJson(
+    'https://api.resend.com/emails',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(requestBody)
+      },
+      timeout: 15_000
+    },
+    requestBody,
+    300_000
+  );
+
+  if (response.statusCode < 200 || response.statusCode > 299) {
+    return { sent: false, reason: 'provider_error' };
+  }
+
+  return { sent: true };
+}
+
+async function sendAdminSignInCode(config, email, code) {
+  const auth = config.adminAuth || {};
+  return sendResendTextEmail({
+    apiKey: auth.resendApiKey,
+    from: auth.from,
+    to: email,
+    subject: 'Your Inspectology Admin sign-in code',
+    text: [
+      'Use this code to sign in to the Inspectology Agent Dashboard admin console:',
+      '',
+      code,
+      '',
+      `This code expires in ${Math.round(auth.codeTtlSeconds / 60)} minutes.`,
+      'If you did not request this code, you can ignore this email.'
+    ].join('\n')
+  });
+}
+
+async function sendAdminSecurityNotice(config, email) {
+  const auth = config.adminAuth || {};
+  if (!auth.securityEmail) return { sent: false, reason: 'not_configured' };
+  return sendResendTextEmail({
+    apiKey: auth.resendApiKey,
+    from: auth.from,
+    to: auth.securityEmail,
+    subject: 'Inspectology Admin sign-in',
+    text: [
+      'An administrator signed in to the Inspectology Agent Dashboard.',
+      '',
+      `Admin: ${email}`,
+      `Time: ${new Date().toISOString()}`,
+      '',
+      'If this was unexpected, review admin access immediately.'
+    ].join('\n')
   });
 }
 
@@ -1442,6 +1683,11 @@ function createPortal(options = {}) {
     ...config,
     rateLimitMax: config.ai.rateLimitMax,
     rateLimitWindowMs: config.ai.rateLimitWindowMs
+  }, nowMs);
+  const allowAdminAuthRequest = createRateLimiter({
+    ...config,
+    rateLimitMax: config.adminAuth.rateLimitMax,
+    rateLimitWindowMs: config.adminAuth.rateLimitWindowMs
   }, nowMs);
 
   function authorizeAgentRequest(req, connectionId, options = {}) {
