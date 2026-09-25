@@ -344,6 +344,11 @@ function installApp() {
 function openAgentInfo(agent) {
   document.querySelector('.info-overlay')?.remove();
 
+  const profileFields = ['firstName', 'lastName', 'agency', 'phone', 'email', 'city', 'state'];
+  const previousProfile = Object.fromEntries(
+    profileFields.map(fieldName => [fieldName, String(agent?.[fieldName] || '')])
+  );
+
   const saveMessage = el('p', { class: 'save-message info-save-message', 'aria-live': 'polite' });
   const form = el('form', { class: 'profile-form info-profile-form' }, [
     el('div', { class: 'form-grid' }, [
@@ -389,7 +394,7 @@ function openAgentInfo(agent) {
           `/api/agent/${encodeURIComponent(getConnectionId())}/profile-change`,
           {
             method: 'POST',
-            body: JSON.stringify({ profile: values })
+            body: JSON.stringify({ profile: values, previousProfile })
           }
         );
         notificationSent = Boolean(body.notificationSent);
