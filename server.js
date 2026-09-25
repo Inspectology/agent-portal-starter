@@ -2036,6 +2036,9 @@ function createPortal(options = {}) {
         if (req.method === 'POST' && operation === 'profile-change') {
           const body = await readJsonBody(req, 16_000);
           const incoming = body.profile && typeof body.profile === 'object' ? body.profile : {};
+          const previous = body.previousProfile && typeof body.previousProfile === 'object'
+            ? body.previousProfile
+            : {};
           const payload = await getAgentPayload(connectionId);
           if (!payload) { sendJson(res, 404, { error: 'Agent not found' }); status = 404; return; }
 
@@ -2044,7 +2047,10 @@ function createPortal(options = {}) {
 
           for (const field of allowedFields) {
             if (!Object.hasOwn(incoming, field)) continue;
-            const oldValue = String(payload.agent?.[field] || '').trim();
+            const sourceValue = Object.hasOwn(previous, field)
+              ? previous[field]
+              : payload.agent?.[field];
+            const oldValue = String(sourceValue || '').trim().slice(0, 240);
             const newValue = String(incoming[field] || '').trim().slice(0, 240);
             if (oldValue !== newValue) changes.push({ field, oldValue, newValue });
           }
