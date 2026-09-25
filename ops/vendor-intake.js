@@ -15,7 +15,8 @@ const VENDORS = Object.freeze([
     domains: ['lynnpestmgmt.com'],
     servicePatterns: [/termite/i, /\bwdo\b/i, /wood[- ]destroy/i],
     messagePatterns: [/lynn pest/i, /termite inspection/i, /\bwdo\b/i],
-    attachmentTypeEnv: 'OPS_ATTACHMENT_TYPE_TERMITE'
+    attachmentTypeEnv: 'OPS_ATTACHMENT_TYPE_TERMITE',
+    documentedDefaultAttachmentType: 'pest_termite'
   },
   {
     key: 'chimney',
@@ -25,7 +26,8 @@ const VENDORS = Object.freeze([
     domains: ['cambro.services'],
     servicePatterns: [/chimney/i],
     messagePatterns: [/chimney inspection/i, /chim insp/i, /cambro services/i],
-    attachmentTypeEnv: 'OPS_ATTACHMENT_TYPE_CHIMNEY'
+    attachmentTypeEnv: 'OPS_ATTACHMENT_TYPE_CHIMNEY',
+    documentedDefaultAttachmentType: 'other'
   },
   {
     key: 'well_water',
@@ -63,7 +65,8 @@ const VENDORS = Object.freeze([
       /septic inspection video/i,
       /young septic/i
     ],
-    attachmentTypeEnv: 'OPS_ATTACHMENT_TYPE_SEPTIC'
+    attachmentTypeEnv: 'OPS_ATTACHMENT_TYPE_SEPTIC',
+    documentedDefaultAttachmentType: 'septic'
   }
 ]);
 
