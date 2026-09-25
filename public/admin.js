@@ -133,6 +133,7 @@ function renderIvyOperations(ivy = {}) {
     ['Operations Sheet', ivy.spreadsheetConfigured ? 'Configured' : 'Missing', Boolean(ivy.spreadsheetConfigured)],
     ['Inbound Webhook', ivy.inboundWebhookConfigured ? 'Configured' : 'Missing', Boolean(ivy.inboundWebhookConfigured)],
     ['Resend API', ivy.resendApiConfigured ? 'Configured' : 'Missing', Boolean(ivy.resendApiConfigured)],
+    ['Vendor Thank-you', ivy.thankReports ? 'Automatic' : 'Off', Boolean(ivy.thankReports)],
     ['Spectora Upload', ivy.autoUpload ? 'LIVE' : 'Dry Run', true]
   ];
 
