@@ -23,7 +23,9 @@ const driveBackupResults = document.getElementById('driveBackupResults');
 const launchReadinessResults = document.getElementById('launchReadinessResults');
 const ivyOpsResults = document.getElementById('ivyOpsResults');
 const ivySheetTest = document.getElementById('ivySheetTest');
+const ivyAttachmentTypeScan = document.getElementById('ivyAttachmentTypeScan');
 const ivyOpsMessage = document.getElementById('ivyOpsMessage');
+const ivyAttachmentTypeResults = document.getElementById('ivyAttachmentTypeResults');
 
 let adminKey = sessionStorage.getItem('inspectologyAdminKey') || '';
 let pendingChallenge = sessionStorage.getItem('inspectologyAdminChallenge') || '';
@@ -258,6 +260,34 @@ if (ivySheetTest) {
       ivyOpsMessage.textContent = error.message;
     } finally {
       ivySheetTest.disabled = false;
+    }
+  });
+}
+
+if (ivyAttachmentTypeScan) {
+  ivyAttachmentTypeScan.addEventListener('click', async () => {
+    ivyAttachmentTypeScan.disabled = true;
+    ivyOpsMessage.textContent = 'Inspecting recent Spectora attachment metadata...';
+    if (ivyAttachmentTypeResults) ivyAttachmentTypeResults.replaceChildren();
+    try {
+      const body = await api('/api/admin/ops/attachment-types');
+      const mappings = Array.isArray(body.mappings) ? body.mappings : [];
+      if (ivyAttachmentTypeResults) {
+        for (const item of mappings) {
+          ivyAttachmentTypeResults.append(
+            el('div', { class: 'report-test-result' }, [
+              el('strong', { text: item.name }),
+              el('span', { text: item.attachmentTypes?.length ? item.attachmentTypes.join(', ') : 'Not found in scanned attachments' })
+            ])
+          );
+        }
+      }
+      ivyOpsMessage.textContent =
+        `Scanned ${body.scanned || 0} recent Spectora attachments across ${body.pagesScanned || 0} page(s).`;
+    } catch (error) {
+      ivyOpsMessage.textContent = error.message;
+    } finally {
+      ivyAttachmentTypeScan.disabled = false;
     }
   });
 }
