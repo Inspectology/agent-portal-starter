@@ -11,29 +11,54 @@ const VENDORS = Object.freeze([
     key: 'termite',
     company: 'Lynn Pest Management',
     emails: ['lynnpestmgmt@gmail.com'],
+    domains: ['lynnpestmgmt.com'],
     servicePatterns: [/termite/i, /\bwdo\b/i, /wood[- ]destroy/i],
+    messagePatterns: [/lynn pest/i, /termite inspection/i, /\bwdo\b/i],
     attachmentTypeEnv: 'OPS_ATTACHMENT_TYPE_TERMITE'
   },
   {
     key: 'chimney',
     company: 'Cambro Services',
     emails: ['mattglick@cambro.services'],
+    domains: ['cambro.services'],
     servicePatterns: [/chimney/i],
+    messagePatterns: [/chimney inspection/i, /chim insp/i, /cambro services/i],
     attachmentTypeEnv: 'OPS_ATTACHMENT_TYPE_CHIMNEY'
   },
   {
     key: 'well_water',
     company: 'Atlantic Blue',
-    emails: ['kaitlyn@atlanticblue.net'],
+    emails: [
+      'kaitlyn@atlanticblue.net',
+      'ablab@atlanticblue.net'
+    ],
+    domains: ['atlanticblue.net'],
     servicePatterns: [/\bwell\b/i, /water test/i, /water quality/i, /potability/i],
+    messagePatterns: [
+      /water test results/i,
+      /failing bacteria/i,
+      /failing bac/i,
+      /lead results/i,
+      /atlantic blue/i
+    ],
     attachmentTypeEnv: 'OPS_ATTACHMENT_TYPE_WELL_WATER',
     documentedDefaultAttachmentType: 'water'
   },
   {
     key: 'septic',
     company: 'Young Septic',
-    emails: ['kaitlyn@atlanticblue.net'],
+    emails: [
+      'anna@youngseptic.com',
+      'info@youngseptic.com',
+      'kaitlyn@atlanticblue.net'
+    ],
+    domains: ['youngseptic.com'],
     servicePatterns: [/septic/i],
+    messagePatterns: [
+      /septic inspection report/i,
+      /septic inspection video/i,
+      /young septic/i
+    ],
     attachmentTypeEnv: 'OPS_ATTACHMENT_TYPE_SEPTIC'
   }
 ]);
@@ -80,14 +105,18 @@ function sourceText(message = {}) {
 
 function classifyVendor(message = {}) {
   const from = normalizeText(message.from);
+  const subject = String(message.subject || '');
   const allText = sourceText(message);
   const matches = [];
 
   for (const vendor of VENDORS) {
     let score = 0;
-    if (vendor.emails.some(email => from.includes(email.toLowerCase()))) score += 80;
-    if (vendor.servicePatterns.some(pattern => pattern.test(allText))) score += 30;
-    if (normalizeText(allText).includes(normalizeText(vendor.company))) score += 40;
+    if (vendor.emails.some(email => from.includes(email.toLowerCase()))) score += 65;
+    if (vendor.domains?.some(domain => from.includes(domain.toLowerCase()))) score += 45;
+    if (vendor.servicePatterns.some(pattern => pattern.test(allText))) score += 35;
+    if (vendor.messagePatterns?.some(pattern => pattern.test(subject))) score += 110;
+    else if (vendor.messagePatterns?.some(pattern => pattern.test(allText))) score += 55;
+    if (normalizeText(allText).includes(normalizeText(vendor.company))) score += 25;
     if (score > 0) matches.push({ vendor, score });
   }
 
@@ -96,12 +125,92 @@ function classifyVendor(message = {}) {
 
   const top = matches[0];
   const second = matches[1];
-  const ambiguous = Boolean(second && top.score - second.score < 25);
+  const ambiguous = Boolean(second && top.score - second.score < 30);
   return {
     vendor: ambiguous ? null : top.vendor,
-    confidence: Math.min(1, top.score / 100),
+    confidence: Math.min(1, top.score / 140),
     ambiguous,
     candidates: matches.map(item => ({ key: item.vendor.key, score: item.score }))
+  };
+}
+
+function classifyDocument(message = {}, vendor = null) {
+  const subject = String(message.subject || '');
+  const body = String(message.body || '');
+  const filenames = (message.filenames || []).map(String);
+  const combined = [subject, body, ...filenames].join('\n');
+
+  if (
+    /^invoice\b/i.test(subject) ||
+    filenames.some(name => /^inv[_ -]/i.test(name)) ||
+    /\binvoice\s*#/i.test(combined) ||
+    /\bamount due\s*:/i.test(combined)
+  ) {
+    return { type: 'invoice', reason: 'Vendor invoice' };
+  }
+
+  if (
+    filenames.some(name => /^well yield disclaimer\.pdf$/i.test(name)) ||
+    /^booking confirmation\b/i.test(subject) ||
+    /^re:\s*booking confirmation\b/i.test(subject)
+  ) {
+    return { type: 'ignore', reason: 'Booking confirmation or standard disclaimer' };
+  }
+
+  if (filenames.some(name => /\.(mp4|mov|m4v)$/i.test(name))) {
+    return { type: 'review', reason: 'Video attachment requires separate handling' };
+  }
+
+  if (vendor?.key === 'termite' && filenames.some(name => /\.pdf$/i.test(name))) {
+    return { type: 'report', reason: 'Lynn Pest termite report PDF' };
+  }
+
+  if (
+    vendor?.key === 'chimney' &&
+    (/chimney inspection/i.test(combined) || /chim insp/i.test(combined)) &&
+    filenames.some(name => /\.pdf$/i.test(name))
+  ) {
+    return { type: 'report', reason: 'Cambro chimney report PDF' };
+  }
+
+  if (
+    vendor?.key === 'septic' &&
+    /septic inspection report/i.test(combined) &&
+    filenames.some(name => /\.pdf$/i.test(name))
+  ) {
+    return { type: 'report', reason: 'Young Septic report PDF' };
+  }
+
+  if (
+    vendor?.key === 'well_water' &&
+    (
+      /water test results/i.test(combined) ||
+      /failing bacteria/i.test(combined) ||
+      /failing bac/i.test(combined) ||
+      /lead results/i.test(combined)
+    ) &&
+    filenames.some(name => /\.pdf$/i.test(name))
+  ) {
+    return { type: 'report', reason: 'Atlantic Blue water results PDF' };
+  }
+
+  return { type: 'review', reason: 'Attachment type is not confidently classified' };
+}
+
+function extractInvoiceData(text = '') {
+  const source = String(text || '');
+  const amountMatch =
+    source.match(/Amount Due\s*:\s*\$?([0-9,]+(?:\.\d{2})?)/i) ||
+    source.match(/Balance Due[\s\S]{0,120}?\$([0-9,]+(?:\.\d{2})?)/i);
+  const projectMatch =
+    source.match(/Project\s*[\r\n]+([^\r\n]+)/i) ||
+    source.match(/(?:property|address)\s*:?\s*([0-9]{1,6}\s+[^\r\n,]+(?:,\s*[^\r\n]+)?)/i);
+  const invoiceMatch = source.match(/Invoice\s*#?\s*[\r\n: ]+([A-Za-z0-9-]+)/i);
+
+  return {
+    amount: amountMatch ? Number(amountMatch[1].replace(/,/g, '')) : null,
+    project: projectMatch?.[1]?.trim() || '',
+    invoiceNumber: invoiceMatch?.[1]?.trim() || ''
   };
 }
 
@@ -283,6 +392,33 @@ function createVendorIntakePlan({
     };
   }
 
+  const document = classifyDocument(message, classified.vendor);
+
+  if (document.type === 'ignore') {
+    return {
+      action: 'ignore',
+      reason: document.reason,
+      vendor: classified.vendor
+    };
+  }
+
+  if (document.type === 'invoice') {
+    return {
+      action: 'ledger',
+      reason: document.reason,
+      vendor: classified.vendor,
+      invoice: extractInvoiceData(message.attachmentText || message.body || '')
+    };
+  }
+
+  if (document.type !== 'report') {
+    return {
+      action: 'review',
+      reason: document.reason,
+      vendor: classified.vendor
+    };
+  }
+
   const match = selectInspectionMatch({
     inspections,
     message,
@@ -414,8 +550,10 @@ async function uploadSpectoraAttachment(apiKey, {
 
 module.exports = {
   VENDORS,
+  classifyDocument,
   classifyVendor,
   createVendorIntakePlan,
+  extractInvoiceData,
   duplicateAttachment,
   extractStreetCandidates,
   listSpectoraAttachments,
