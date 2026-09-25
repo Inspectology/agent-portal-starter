@@ -162,6 +162,7 @@ function createConfig(env = process.env) {
       from: String(env.PROFILE_CHANGE_EMAIL_FROM || '').trim()
     },
     operations: {
+      resendApiKey: String(env.OPS_RESEND_API_KEY || env.RESEND_API_KEY || '').trim(),
       spreadsheetId: String(
         env.OPS_SPREADSHEET_ID ||
         '15zah4PYh510csoKw2BkH5p88eZmhh7qFsG1AxxdimVQ'
@@ -1929,13 +1930,13 @@ function createPortal(options = {}) {
   async function processIvyReceivedEmail(req, event) {
     const emailId = String(event?.data?.email_id || '').trim();
     if (!emailId) throw authError('Resend received email ID is missing', 400);
-    if (!config.profileNotifications.resendApiKey) {
+    if (!config.operations.resendApiKey) {
       throw authError('Resend API is not configured', 503);
     }
 
     const [email, attachments] = await Promise.all([
-      retrieveReceivedEmail(config.profileNotifications.resendApiKey, emailId),
-      listReceivedAttachments(config.profileNotifications.resendApiKey, emailId)
+      retrieveReceivedEmail(config.operations.resendApiKey, emailId),
+      listReceivedAttachments(config.operations.resendApiKey, emailId)
     ]);
     const message = receivedEmailToMessage(event, email, attachments);
     const sheetsToken = await googleSheetsAccessToken(
@@ -2716,7 +2717,7 @@ function createPortal(options = {}) {
               email: config.operations.ivyEmail,
               spreadsheetConfigured: Boolean(config.operations.spreadsheetId),
               inboundWebhookConfigured: Boolean(config.operations.resendWebhookSecret),
-              resendApiConfigured: Boolean(config.profileNotifications.resendApiKey),
+              resendApiConfigured: Boolean(config.operations.resendApiKey),
               autoUpload: config.operations.autoUpload
             }
           });
