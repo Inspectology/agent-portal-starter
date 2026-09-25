@@ -1942,6 +1942,12 @@ function createPortal(options = {}) {
         if (req.method === 'GET' && pathname === '/api/admin/session') {
           const drive = config.googleDrive || {};
           const profileEmail = config.profileNotifications || {};
+          const spectoraMissing = [];
+          if (config.mode !== 'live') spectoraMissing.push('PORTAL_MODE=live');
+          if (!config.apiKey) spectoraMissing.push('SPECTORA_API_KEY');
+          if (!config.companyId) spectoraMissing.push('SPECTORA_COMPANY_ID');
+          if (!config.signingSecret) spectoraMissing.push('PORTAL_SIGNING_SECRET');
+
           sendJson(res, 200, {
             status: 'ok',
             admin: {
@@ -1950,12 +1956,8 @@ function createPortal(options = {}) {
             },
             readiness: {
               environment: config.deploymentEnvironment || config.mode || 'unknown',
-              spectora: Boolean(
-                config.mode === 'live' &&
-                config.apiKey &&
-                config.companyId &&
-                config.signingSecret
-              ),
+              spectora: spectoraMissing.length === 0,
+              spectoraMissing,
               googleDrive: Boolean(
                 drive.projectNumber &&
                 drive.poolId &&
