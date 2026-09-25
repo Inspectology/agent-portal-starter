@@ -95,7 +95,13 @@ function renderLaunchReadiness(readiness = {}) {
 
   const items = [
     ['Deployment', readiness.environment || 'unknown', Boolean(readiness.environment)],
-    ['Live Spectora', readiness.spectora ? 'Configured' : 'Missing', Boolean(readiness.spectora)],
+    [
+      'Live Spectora',
+      readiness.spectora
+        ? 'Configured'
+        : `Missing: ${(readiness.spectoraMissing || []).join(', ') || 'configuration'}`,
+      Boolean(readiness.spectora)
+    ],
     ['Google Drive', readiness.googleDrive ? 'Configured' : 'Missing', Boolean(readiness.googleDrive)],
     ['Inspectology AI', readiness.openAi ? 'Configured' : 'Missing', Boolean(readiness.openAi)],
     ['Profile update email', readiness.profileEmail ? 'Configured' : 'Missing', Boolean(readiness.profileEmail)],
