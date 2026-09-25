@@ -32,6 +32,7 @@ const {
   retrieveReceivedEmail,
   verifyResendWebhook
 } = require('./ops/resend-inbound');
+const { sendIvyEmail } = require('./ops/ivy-email');
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -171,7 +172,8 @@ function createConfig(env = process.env) {
       ivyEmail: 'ivy@inspect-ology.com',
       ivyReplyTo: 'info@inspect-ology.com',
       resendWebhookSecret: String(env.OPS_RESEND_WEBHOOK_SECRET || '').trim(),
-      autoUpload: String(env.OPS_AUTO_UPLOAD || 'false').trim().toLowerCase() === 'true'
+      autoUpload: String(env.OPS_AUTO_UPLOAD || 'false').trim().toLowerCase() === 'true',
+      thankReports: String(env.OPS_THANK_REPORTS || 'true').trim().toLowerCase() === 'true'
     },
     googleDrive: {
       projectNumber: String(env.GOOGLE_CLOUD_PROJECT_NUMBER || '').trim(),
@@ -1877,6 +1879,48 @@ function createPortal(options = {}) {
     return String(sourceEmailId || '') + '|' + String(filename || '').trim().toLowerCase();
   }
 
+  function ivyEmailAddress(value = '') {
+    const text = String(value || '').trim();
+    const angle = text.match(/<([^<>\s]+@[^<>\s]+)>/);
+    if (angle) return angle[1].trim().toLowerCase();
+    const bare = text.match(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i);
+    return bare ? bare[0].trim().toLowerCase() : '';
+  }
+
+  function ivyHasProcessedEmail(existingKeys, sourceEmailId) {
+    const prefix = String(sourceEmailId || '') + '|';
+    for (const key of existingKeys) {
+      if (String(key).startsWith(prefix)) return true;
+    }
+    return false;
+  }
+
+  async function ivySendReportThanks(message) {
+    if (!config.operations.thankReports) return { sent: false, reason: 'disabled' };
+
+    const recipient = ivyEmailAddress(message.replyTo) || ivyEmailAddress(message.from);
+    if (!recipient) return { sent: false, reason: 'no-recipient' };
+    if (recipient === 'ivy@inspect-ology.com' || recipient === 'info@inspect-ology.com') {
+      return { sent: false, reason: 'self-recipient' };
+    }
+
+    const originalSubject = String(message.subject || '').trim();
+    const subject = /^re:/i.test(originalSubject)
+      ? originalSubject
+      : 'Re: ' + (originalSubject || 'Report');
+
+    await sendIvyEmail(
+      { resendApiKey: config.operations.resendApiKey },
+      {
+        to: recipient,
+        subject,
+        text: 'Thank you for the report!'
+      }
+    );
+
+    return { sent: true, recipient };
+  }
+
   async function ivyExistingKeys(sheetsToken) {
     const activityRows = await readRows(
       sheetsToken,
@@ -2014,6 +2058,19 @@ function createPortal(options = {}) {
         await ivyLogException(sheetsToken, message, vendor, document.reason);
       }
       return { action: 'review', vendor: vendor.company, reason: document.reason };
+    }
+
+    if (!ivyHasProcessedEmail(existingKeys, message.sourceEmailId)) {
+      try {
+        await ivySendReportThanks(message);
+      } catch (error) {
+        await ivyLogException(
+          sheetsToken,
+          message,
+          vendor,
+          'Report received, but IVY could not send the thank-you email'
+        );
+      }
     }
 
     const streets = extractStreetCandidates(message);
@@ -2719,7 +2776,8 @@ function createPortal(options = {}) {
               spreadsheetConfigured: Boolean(config.operations.spreadsheetId),
               inboundWebhookConfigured: Boolean(config.operations.resendWebhookSecret),
               resendApiConfigured: Boolean(config.operations.resendApiKey),
-              autoUpload: config.operations.autoUpload
+              autoUpload: config.operations.autoUpload,
+              thankReports: config.operations.thankReports
             }
           });
           status = 200;
