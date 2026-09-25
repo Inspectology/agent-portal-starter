@@ -17,6 +17,7 @@ const {
   duplicateAttachment,
   extractInvoiceData,
   extractStreetCandidates,
+  listSpectoraAttachmentPage,
   listSpectoraAttachments,
   resolveAttachmentType,
   searchSpectoraInspections,
@@ -2761,10 +2762,7 @@ function createPortal(options = {}) {
           let pagesScanned = 0;
 
           for (let page = 1; page <= 10; page += 1) {
-            const response = await spectoraJson(
-              config.apiKey,
-              '/v2/inspection_attachments?page[size]=200&page[number]=' + page + '&sort=-created_at'
-            );
+            const response = await listSpectoraAttachmentPage(config.apiKey, page, 200);
             const items = Array.isArray(response?.data) ? response.data : [];
             pagesScanned += 1;
             scanned += items.length;
