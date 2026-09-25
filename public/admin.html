@@ -18,17 +18,45 @@
         <a class="admin-home-link" href="/">Agent Dashboard</a>
       </header>
 
-      <section class="admin-card" id="loginCard">
-        <h1>Admin Access</h1>
-        <p>Enter the private admin access key stored in Vercel.</p>
-        <form id="loginForm" class="admin-form">
+      <section class="admin-card admin-login-card" id="loginCard">
+        <span class="admin-login-kicker">Inspectology Staff</span>
+        <h1>Admin Sign In</h1>
+        <p>Enter your authorized Inspectology email and we’ll send you a secure 6-digit sign-in code.</p>
+
+        <form id="emailLoginForm" class="admin-form">
           <label class="form-field">
-            <span>Admin access key</span>
-            <input id="adminKey" type="password" autocomplete="current-password" required>
+            <span>Inspectology email</span>
+            <input id="adminEmail" type="email" autocomplete="email" placeholder="name@inspect-ology.com" required>
           </label>
-          <button class="primary-button" type="submit">Continue</button>
-          <p id="loginMessage" class="admin-message" aria-live="polite"></p>
+          <button class="primary-button" type="submit">Send Sign-In Code</button>
         </form>
+
+        <form id="codeForm" class="admin-form admin-code-form" hidden>
+          <div class="admin-code-intro">
+            <strong>Check your email</strong>
+            <span id="codeSentTo"></span>
+          </div>
+          <label class="form-field">
+            <span>6-digit code</span>
+            <input id="adminCode" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="000000" required>
+          </label>
+          <button class="primary-button" type="submit">Sign In</button>
+          <button id="changeEmail" class="secondary-button" type="button">Use a Different Email</button>
+        </form>
+
+        <p id="loginMessage" class="admin-message" aria-live="polite"></p>
+
+        <details class="admin-emergency">
+          <summary>Emergency access</summary>
+          <p>Use the existing private admin key only if email sign-in is unavailable.</p>
+          <form id="fallbackLoginForm" class="admin-form">
+            <label class="form-field">
+              <span>Admin access key</span>
+              <input id="adminKey" type="password" autocomplete="current-password">
+            </label>
+            <button class="secondary-button" type="submit">Use Emergency Key</button>
+          </form>
+        </details>
       </section>
 
       <section class="admin-card" id="searchCard" hidden>
@@ -37,7 +65,10 @@
             <h1>Agent Invites</h1>
             <p>Search Spectora, then generate a secure 30-day Agent Dashboard invite.</p>
           </div>
-          <button id="signOut" class="secondary-button" type="button">Sign Out</button>
+          <div class="admin-session-actions">
+            <span id="signedInAs" class="admin-signed-in-as"></span>
+            <button id="signOut" class="secondary-button" type="button">Sign Out</button>
+          </div>
         </div>
 
         <section class="launch-readiness" aria-labelledby="launchReadinessHeading">
