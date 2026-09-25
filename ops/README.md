@@ -1,54 +1,115 @@
-# Inspectology Operations Agent
+# IVY - Inspectology Virtual Operations Assistant
 
-Phase 1 focuses on safe third-party vendor report intake.
+IVY is the internal Inspectology operations agent. Phase 1 automates third-party vendor document intake conservatively.
 
-## Vendors
+## Current Phase 1 flow
 
-- Lynn Pest Management — Termite / WDO
-- Cambro Services — Chimney
-- Atlantic Blue — Well / Water Testing
-- Young Septic — Septic
+1. A vendor email is forwarded to the Inspectology Resend inbound address.
+2. Resend sends a signed `email.received` webhook to IVY.
+3. IVY verifies the webhook signature before doing anything.
+4. IVY retrieves the full email and attachment metadata from Resend.
+5. IVY recognizes the vendor and document type from real Inspectology email patterns.
+6. Reports are matched to Spectora by property address, service, ZIP, and date.
+7. Existing Spectora attachments are checked for duplicate filenames.
+8. Every decision is written to the Inspectology Operations Google Sheet.
+9. Ambiguous items go to the Exceptions tab instead of being guessed.
+10. Automatic Spectora upload remains disabled until dry-run results are approved.
 
-## Safety rules
+## Vendors and learned email patterns
 
-The intake engine never guesses which inspection should receive a document.
+### Lynn Pest Management
+- Service: Termite / WDO
+- Sender: `lynnpestmgmt@gmail.com`
+- Reports usually use the property address as the subject and PDF filename.
+- Separate invoice emails use subjects like `Invoice 9-3792 from L&J Lynn LLC`.
+- Invoices are ledger entries, never report uploads.
 
-An automatic upload is planned only when:
+### Cambro Services
+- Service: Chimney
+- Sender: `mattglick@cambro.services`
+- Reports commonly use subjects like `1003 Kingston Rd chimney inspection`.
+- PDF filenames commonly end in `Chim Insp.pdf`.
 
-1. The vendor is recognized.
-2. A street address can be extracted from the message or attachment filename.
-3. A single Spectora inspection is a strong match.
-4. The same filename is not already attached.
-5. A valid Spectora attachment type is configured.
+### Atlantic Blue
+- Service: Well / Water Testing
+- Senders include `@atlanticblue.net`, including the lab.
+- Report subjects include Water Test Results, Failing Bacteria, and Lead Results.
+- Generic `Well Yield Disclaimer.pdf` booking attachments are ignored.
+- Spectora documents the `water` attachment type, so this category can be enabled after dry-run validation.
 
-Otherwise the item returns `action: review` for the future Jessica exception queue.
+### Young Septic
+- Service: Septic
+- Direct reports commonly arrive from `anna@youngseptic.com` / `info@youngseptic.com`.
+- Some are forwarded through Atlantic Blue.
+- Report subjects use `Septic Inspection Report for [address]`.
+- Video attachments remain review-only until a separate video policy is approved.
 
-## Spectora integration
+## Google Workspace ledger
 
-The engine uses:
+Spreadsheet: **Inspectology Operations**
 
-- `GET /v2/inspections` to find candidate inspections.
-- `GET /v2/inspection_attachments` for duplicate checks.
-- `POST /v2/inspection_attachments` for the final multipart upload.
+Tabs:
+- Vendor Activity
+- Exceptions
+- Vendors
+- Weekly Summary
 
-Well / Water uses Spectora's documented `water` attachment type by default.
+Vendor Activity keeps reports and invoices as separate entry types so weekly inspection counts are not inflated by vendor invoices.
 
-The remaining vendor attachment categories should be explicitly configured after we confirm the correct Spectora enum values:
+The spreadsheet is stored inside the `IVY - Inspectology Operations` folder in the Inspectology Admin Drive and is shared with the existing Inspectology dashboard service account.
 
-- `OPS_ATTACHMENT_TYPE_TERMITE`
-- `OPS_ATTACHMENT_TYPE_CHIMNEY`
-- `OPS_ATTACHMENT_TYPE_SEPTIC`
+## Safety controls
 
-Optional override:
+`OPS_AUTO_UPLOAD=false` is the required starting mode.
 
-- `OPS_ATTACHMENT_TYPE_WELL_WATER`
+In dry-run mode IVY can:
+- recognize vendor reports
+- match them to Spectora inspections
+- detect duplicate filenames
+- record invoices and vendor costs
+- populate the Google Sheet
+- create exceptions
 
-## Next step
+In dry-run mode IVY cannot modify a Spectora inspection.
 
-Connect the actual Inspectology operations mailbox. The currently connected Gmail account did not contain recent attachment traffic from these vendors, so the email ingestion layer has intentionally not been trained on guessed subject lines or filenames.
+An automatic upload will only be allowed when:
+- vendor classification is confident
+- a supported report PDF is present
+- exactly one Spectora inspection is a strong match
+- the filename is not already attached
+- that vendor's Spectora attachment type is explicitly configured
+- `OPS_AUTO_UPLOAD=true`
 
-Once the operations mailbox is connected, the next workflow is:
+## Email identity
 
-Gmail attachment → vendor/address extraction → Spectora match → duplicate check → upload or Jessica review queue → ledger entry.
+Every automated IVY message must use the central `ops/ivy-email.js` helper.
 
-The ledger will later power Jessica's weekly vendor count/cost email.
+Approved identity:
+- IVY
+- Inspectology Virtual Operations Assistant
+- `ivy@inspect-ology.com`
+- Replies route to `info@inspect-ology.com`
+
+The helper appends IVY's Inspectology-branded signature to both plain-text and HTML versions.
+
+## Inbound configuration
+
+Resend supports inbound email through an `email.received` webhook. The endpoint for this app is:
+
+`POST /api/ops/resend-webhook`
+
+The webhook secret must be stored only in:
+
+`OPS_RESEND_WEBHOOK_SECRET`
+
+The endpoint verifies the raw body against the Resend/Svix signature headers and rejects stale or invalid signatures.
+
+## Next milestones
+
+1. Configure the Preview Resend inbound webhook and Gmail vendor forwarding.
+2. Run real vendor traffic through IVY with automatic upload disabled.
+3. Review the Vendor Activity and Exceptions tabs.
+4. Determine the exact Spectora attachment types for termite, chimney, and septic.
+5. Approve and enable automatic report uploads.
+6. Build Jessica's Friday vendor summary from the same ledger.
+7. Add narrowly scoped routine email replies.
