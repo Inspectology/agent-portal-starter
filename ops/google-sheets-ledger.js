@@ -56,6 +56,7 @@ async function readRows(accessToken, spreadsheetId, range) {
 function vendorActivityRow(activity = {}) {
   return [
     activity.receivedAt || '',
+    activity.entryType || '',
     activity.vendor || '',
     activity.service || '',
     activity.propertyAddress || '',
@@ -64,6 +65,7 @@ function vendorActivityRow(activity = {}) {
     activity.sourceEmailId || '',
     activity.attachmentFilename || '',
     activity.vendorCost ?? '',
+    activity.invoiceNumber || '',
     activity.status || '',
     activity.spectoraAttachmentId || '',
     activity.uploadedAt || '',
@@ -90,7 +92,7 @@ async function appendVendorActivity(accessToken, config, activity) {
   return appendRow(
     accessToken,
     sheetId(config),
-    "'Vendor Activity'!A:M",
+    "'Vendor Activity'!A:O",
     vendorActivityRow(activity)
   );
 }
@@ -107,18 +109,20 @@ async function appendException(accessToken, config, item) {
 function parseVendorActivityRows(rows = []) {
   return rows.map(row => ({
     receivedAt: row[0] || '',
-    vendor: row[1] || '',
-    service: row[2] || '',
-    propertyAddress: row[3] || '',
-    spectoraInspectionId: row[4] || '',
-    inspectionDate: row[5] || '',
-    sourceEmailId: row[6] || '',
-    attachmentFilename: row[7] || '',
-    vendorCost: row[8] === '' || row[8] == null ? null : Number(row[8]),
-    status: row[9] || '',
-    spectoraAttachmentId: row[10] || '',
-    uploadedAt: row[11] || '',
-    notes: row[12] || ''
+    entryType: row[1] || '',
+    vendor: row[2] || '',
+    service: row[3] || '',
+    propertyAddress: row[4] || '',
+    spectoraInspectionId: row[5] || '',
+    inspectionDate: row[6] || '',
+    sourceEmailId: row[7] || '',
+    attachmentFilename: row[8] || '',
+    vendorCost: row[9] === '' || row[9] == null ? null : Number(row[9]),
+    invoiceNumber: row[10] || '',
+    status: row[11] || '',
+    spectoraAttachmentId: row[12] || '',
+    uploadedAt: row[13] || '',
+    notes: row[14] || ''
   }));
 }
 
@@ -152,8 +156,12 @@ function summarizeVendorActivity(activities = [], { start, end } = {}) {
 
     const group = groups.get(key);
     const status = String(activity.status || '').toLowerCase();
+    const entryType = String(activity.entryType || '').toLowerCase();
 
-    if (['uploaded', 'matched', 'received', 'duplicate'].includes(status)) {
+    if (
+      entryType === 'report' &&
+      ['uploaded', 'matched', 'received', 'duplicate'].includes(status)
+    ) {
       group.inspectionCount += 1;
     }
     if (Number.isFinite(Number(activity.vendorCost))) {
@@ -172,7 +180,7 @@ async function getVendorActivity(accessToken, config) {
   const rows = await readRows(
     accessToken,
     sheetId(config),
-    "'Vendor Activity'!A2:M"
+    "'Vendor Activity'!A2:O"
   );
   return parseVendorActivityRows(rows);
 }
