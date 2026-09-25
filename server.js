@@ -2166,7 +2166,7 @@ function createPortal(options = {}) {
         file: fileBuffer,
         filename: file.filename,
         mimeType: file.contentType || 'application/pdf',
-        name: vendor.company + ' Report',
+        name: document.displayName || (vendor.company + ' Report'),
         description: vendor.company + ' third-party report received by Inspectology',
         attachmentType,
         report: true,
