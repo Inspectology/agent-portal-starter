@@ -9,6 +9,7 @@ const STREET_SUFFIXES = [
 const VENDORS = Object.freeze([
   {
     key: 'termite',
+    service: 'Termite / WDO',
     company: 'Lynn Pest Management',
     emails: ['lynnpestmgmt@gmail.com'],
     domains: ['lynnpestmgmt.com'],
@@ -18,6 +19,7 @@ const VENDORS = Object.freeze([
   },
   {
     key: 'chimney',
+    service: 'Chimney',
     company: 'Cambro Services',
     emails: ['mattglick@cambro.services'],
     domains: ['cambro.services'],
@@ -27,6 +29,7 @@ const VENDORS = Object.freeze([
   },
   {
     key: 'well_water',
+    service: 'Well / Water Testing',
     company: 'Atlantic Blue',
     emails: [
       'kaitlyn@atlanticblue.net',
@@ -46,6 +49,7 @@ const VENDORS = Object.freeze([
   },
   {
     key: 'septic',
+    service: 'Septic',
     company: 'Young Septic',
     emails: [
       'anna@youngseptic.com',
@@ -205,7 +209,9 @@ function extractInvoiceData(text = '') {
   const projectMatch =
     source.match(/Project\s*[\r\n]+([^\r\n]+)/i) ||
     source.match(/(?:property|address)\s*:?\s*([0-9]{1,6}\s+[^\r\n,]+(?:,\s*[^\r\n]+)?)/i);
-  const invoiceMatch = source.match(/Invoice\s*#?\s*[\r\n: ]+([A-Za-z0-9-]+)/i);
+  const invoiceMatch =
+    source.match(/Invoice\s*#?\s*[\r\n: ]+([A-Za-z0-9-]+)/i) ||
+    source.match(/\bInvoice\s+([0-9]+-[0-9]+)\b/i);
 
   return {
     amount: amountMatch ? Number(amountMatch[1].replace(/,/g, '')) : null,
