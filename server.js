@@ -6,6 +6,38 @@ const fs = require('node:fs');
 const http = require('node:http');
 const https = require('node:https');
 const path = require('node:path');
+const {
+  appendException,
+  appendVendorActivity,
+  appendWeeklySummary,
+  readRows
+} = require('./ops/google-sheets-ledger');
+const {
+  classifyDocument,
+  classifyVendor,
+  duplicateAttachment,
+  extractInvoiceData,
+  extractStreetCandidates,
+  listSpectoraAttachmentPage,
+  listSpectoraAttachments,
+  resolveAttachmentType,
+  searchSpectoraInspections,
+  selectInspectionMatch,
+  uploadSpectoraAttachment
+} = require('./ops/vendor-intake');
+const {
+  downloadAttachment,
+  listReceivedAttachments,
+  receivedEmailToMessage,
+  retrieveReceivedAttachment,
+  retrieveReceivedEmail,
+  verifyResendWebhook
+} = require('./ops/resend-inbound');
+const { sendIvyEmail } = require('./ops/ivy-email');
+const {
+  buildVendorPayablesReport,
+  expectedVendorsForInspection
+} = require('./ops/vendor-payables');
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -118,8 +150,12 @@ function createConfig(env = process.env) {
         .map(value => value.trim().toLowerCase())
         .filter(Boolean),
       securityEmail: String(env.ADMIN_SECURITY_EMAIL_TO || 'info@inspect-ology.com').trim().toLowerCase(),
-      from: String(env.ADMIN_AUTH_EMAIL_FROM || env.PROFILE_CHANGE_EMAIL_FROM || '').trim(),
-      resendApiKey: String(env.RESEND_API_KEY || '').trim(),
+      from: String(
+        env.ADMIN_AUTH_EMAIL_FROM ||
+        env.PROFILE_CHANGE_EMAIL_FROM ||
+        'IVY | Inspectology <ivy@inspect-ology.com>'
+      ).trim(),
+      resendApiKey: String(env.OPS_RESEND_API_KEY || env.RESEND_API_KEY || '').trim(),
       codeTtlSeconds: boundedInteger(env.ADMIN_CODE_TTL_SECONDS, 600, 300, 1800),
       sessionTtlSeconds: boundedInteger(env.ADMIN_SESSION_TTL_SECONDS, 43_200, 1800, 86_400),
       rateLimitMax: boundedInteger(env.ADMIN_AUTH_RATE_LIMIT_MAX, 5, 1, 20),
@@ -135,6 +171,21 @@ function createConfig(env = process.env) {
       resendApiKey: String(env.RESEND_API_KEY || '').trim(),
       to: String(env.PROFILE_CHANGE_EMAIL_TO || '').trim(),
       from: String(env.PROFILE_CHANGE_EMAIL_FROM || '').trim()
+    },
+    operations: {
+      resendApiKey: String(env.OPS_RESEND_API_KEY || env.RESEND_API_KEY || '').trim(),
+      spreadsheetId: String(
+        env.OPS_SPREADSHEET_ID ||
+        '15zah4PYh510csoKw2BkH5p88eZmhh7qFsG1AxxdimVQ'
+      ).trim(),
+      ivyEmail: 'ivy@inspect-ology.com',
+      ivyReplyTo: 'info@inspect-ology.com',
+      resendWebhookSecret: String(env.OPS_RESEND_WEBHOOK_SECRET || '').trim(),
+      autoUpload: String(env.OPS_AUTO_UPLOAD || 'false').trim().toLowerCase() === 'true',
+      thankReports: String(env.OPS_THANK_REPORTS || 'true').trim().toLowerCase() === 'true',
+      payablesEmailTo: String(env.OPS_PAYABLES_EMAIL_TO || 'info@inspect-ology.com').trim().toLowerCase(),
+      payablesAnchorMonday: String(env.OPS_PAYABLES_ANCHOR_MONDAY || '2026-09-28').trim(),
+      cronSecret: String(env.CRON_SECRET || '').trim()
     },
     googleDrive: {
       projectNumber: String(env.GOOGLE_CLOUD_PROJECT_NUMBER || '').trim(),
@@ -450,6 +501,24 @@ function clearAdminSessionCookie() {
   ].join('; ');
 }
 
+function readRawBody(req, maxBytes = 2_000_000) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let bytes = 0;
+    req.on('data', chunk => {
+      bytes += chunk.length;
+      if (bytes > maxBytes) {
+        reject(authError('Request body too large', 413));
+        req.destroy?.();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
+}
+
 function readJsonBody(req, maxBytes = 16_384) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -528,7 +597,9 @@ function requestJson(url, options = {}, body = null, maxBytes = 2_000_000) {
   });
 }
 
-async function googleDriveAccessToken(config, runtimeOidcToken = '') {
+async function googleWorkspaceAccessToken(config, runtimeOidcToken = '', scopes = [
+  'https://www.googleapis.com/auth/drive.readonly'
+]) {
   const drive = config.googleDrive || {};
   const oidcToken = String(runtimeOidcToken || process.env.VERCEL_OIDC_TOKEN || '').trim();
 
@@ -577,7 +648,7 @@ async function googleDriveAccessToken(config, runtimeOidcToken = '') {
   }
 
   const impersonationBody = JSON.stringify({
-    scope: ['https://www.googleapis.com/auth/drive.readonly'],
+    scope: scopes,
     lifetime: '3600s'
   });
   const serviceAccount = encodeURIComponent(drive.serviceAccountEmail);
@@ -609,6 +680,18 @@ async function googleDriveAccessToken(config, runtimeOidcToken = '') {
   }
 
   return impersonation.json.accessToken;
+}
+
+function googleDriveAccessToken(config, runtimeOidcToken = '') {
+  return googleWorkspaceAccessToken(config, runtimeOidcToken, [
+    'https://www.googleapis.com/auth/drive.readonly'
+  ]);
+}
+
+function googleSheetsAccessToken(config, runtimeOidcToken = '') {
+  return googleWorkspaceAccessToken(config, runtimeOidcToken, [
+    'https://www.googleapis.com/auth/spreadsheets'
+  ]);
 }
 
 async function googleDriveListChildren(accessToken, parentId) {
@@ -751,20 +834,23 @@ async function sendResendTextEmail({ apiKey, from, to, subject, text }) {
 
 async function sendAdminSignInCode(config, email, code) {
   const auth = config.adminAuth || {};
-  return sendResendTextEmail({
-    apiKey: auth.resendApiKey,
-    from: auth.from,
-    to: email,
-    subject: 'Your Inspectology Admin sign-in code',
-    text: [
-      'Use this code to sign in to the Inspectology Agent Dashboard admin console:',
-      '',
-      code,
-      '',
-      `This code expires in ${Math.round(auth.codeTtlSeconds / 60)} minutes.`,
-      'If you did not request this code, you can ignore this email.'
-    ].join('\n')
-  });
+  try {
+    await sendIvyEmail(config.operations, {
+      to: email,
+      subject: 'Your IVY sign-in code',
+      text: [
+        'Use this code to sign in to IVY:',
+        '',
+        code,
+        '',
+        `This code expires in ${Math.round(auth.codeTtlSeconds / 60)} minutes.`,
+        'If you did not request this code, you can ignore this email.'
+      ].join('\n')
+    });
+    return { sent: true };
+  } catch (error) {
+    return { sent: false, reason: 'provider_error' };
+  }
 }
 
 async function sendAdminSecurityNotice(config, email) {
@@ -858,6 +944,81 @@ function openAiOutputText(payload) {
     }
   }
   return parts.join('\n').trim();
+}
+
+async function askIvyOperations(config, prompt, identity, activity, exceptions) {
+  if (!config.ai.apiKey) throw authError('IVY AI is not configured yet', 503);
+
+  const cleanPrompt = String(prompt || '').trim().slice(0, 800);
+  if (!cleanPrompt) throw authError('Enter a command for IVY', 400);
+
+  const operationalContext = {
+    currentTime: new Date().toISOString(),
+    staffEmail: String(identity?.email || ''),
+    recentVendorActivity: activity.slice(0, 40),
+    openExceptions: exceptions.slice(0, 40)
+  };
+
+  const instructions = [
+    'You are IVY, the Inspectology Virtual Operations Assistant.',
+    'This is the staff mobile command center.',
+    'Answer only from the operational context supplied in this request.',
+    'Be concise, practical, and conversational.',
+    'You can answer questions about recent vendor reports, vendor activity, statuses, property addresses, and open exceptions.',
+    'This first mobile command version is read-only.',
+    'Do not claim that you sent an email, replied to a message, changed Spectora, uploaded a file, resolved an exception, scheduled anything, or took another external action.',
+    'If the staff member asks you to perform an action, clearly say that action commands are not enabled in the mobile command center yet and that no action was taken.',
+    'Do not invent missing report, email, client, inspection, or vendor information.',
+    'If the requested information is outside the supplied context, say what is missing.'
+  ].join(' ');
+
+  const requestBody = JSON.stringify({
+    model: config.ai.model,
+    store: false,
+    max_output_tokens: 650,
+    instructions,
+    input: [{
+      role: 'user',
+      content: [{
+        type: 'input_text',
+        text: [
+          'Operational context:',
+          JSON.stringify(operationalContext),
+          '',
+          'Staff command:',
+          cleanPrompt
+        ].join('\n')
+      }]
+    }]
+  });
+
+  const response = await requestJson(
+    'https://api.openai.com/v1/responses',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.ai.apiKey}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(requestBody)
+      },
+      timeout: 45_000
+    },
+    requestBody,
+    1_000_000
+  );
+
+  if (response.statusCode < 200 || response.statusCode > 299 || !response.json) {
+    const message = response.json?.error?.message || `OpenAI returned HTTP ${response.statusCode}`;
+    throw new Error(message);
+  }
+
+  const answer = openAiOutputText(response.json);
+  if (!answer) throw new Error('IVY returned an empty answer');
+
+  return {
+    answer,
+    model: response.json.model || config.ai.model
+  };
 }
 
 async function askOpenAiAboutReport(config, pdfBuffer, filename, question, history, inspection) {
@@ -1782,7 +1943,9 @@ function createPortal(options = {}) {
   function sendStatic(res, pathname) {
     const requested = pathname === '/admin' || pathname.startsWith('/admin/')
       ? '/admin.html'
-      : (pathname === '/' || pathname === '/design-preview' || pathname.startsWith('/agent/') ? '/index.html' : pathname);
+      : (pathname === '/ivy' || pathname.startsWith('/ivy/')
+          ? '/ivy.html'
+          : (pathname === '/' || pathname === '/design-preview' || pathname.startsWith('/agent/') ? '/index.html' : pathname));
     let decoded;
     try { decoded = decodeURIComponent(requested); } catch { sendJson(res, 400, { error: 'Malformed URL' }); return; }
     if (decoded.includes('\0') || decoded.includes('\\') || decoded.split('/').includes('..')) { sendJson(res, 403, { error: 'Forbidden' }); return; }
@@ -1793,6 +1956,806 @@ function createPortal(options = {}) {
       'Cache-Control': file.cacheControl
     }));
     res.end(file.body);
+  }
+
+  function inspectionAddress(inspection) {
+    const attrs = inspection?.attributes || {};
+    return String(attrs.full_address || attrs.property_address || '').trim();
+  }
+
+  function inspectionDateTime(inspection) {
+    return String(inspection?.attributes?.datetime || '').trim();
+  }
+
+  function ivyLedgerKey(sourceEmailId, filename = '') {
+    return String(sourceEmailId || '') + '|' + String(filename || '').trim().toLowerCase();
+  }
+
+  function ivyEmailAddress(value = '') {
+    const text = String(value || '').trim();
+    const angle = text.match(/<([^<>\s]+@[^<>\s]+)>/);
+    if (angle) return angle[1].trim().toLowerCase();
+    const bare = text.match(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i);
+    return bare ? bare[0].trim().toLowerCase() : '';
+  }
+
+  function ivyHasProcessedEmail(existingKeys, sourceEmailId) {
+    const prefix = String(sourceEmailId || '') + '|';
+    for (const key of existingKeys) {
+      if (String(key).startsWith(prefix)) return true;
+    }
+    return false;
+  }
+
+  async function ivySendReportThanks(message) {
+    if (!config.operations.thankReports) return { sent: false, reason: 'disabled' };
+
+    const recipient = ivyEmailAddress(message.replyTo) || ivyEmailAddress(message.from);
+    if (!recipient) return { sent: false, reason: 'no-recipient' };
+    if (recipient === 'ivy@inspect-ology.com' || recipient === 'info@inspect-ology.com') {
+      return { sent: false, reason: 'self-recipient' };
+    }
+
+    const originalSubject = String(message.subject || '').trim();
+    const subject = /^re:/i.test(originalSubject)
+      ? originalSubject
+      : 'Re: ' + (originalSubject || 'Report');
+
+    await sendIvyEmail(
+      { resendApiKey: config.operations.resendApiKey },
+      {
+        to: recipient,
+        subject,
+        text: 'Thank you for the report!'
+      }
+    );
+
+    return { sent: true, recipient };
+  }
+
+  function ivyPayablesDate(value) {
+    const text = String(value || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return '';
+    const parsed = Date.parse(text + 'T12:00:00Z');
+    return Number.isFinite(parsed) ? text : '';
+  }
+
+  function ivyPayablesDateAdd(value, days) {
+    const clean = ivyPayablesDate(value);
+    if (!clean) return '';
+    const date = new Date(clean + 'T12:00:00Z');
+    date.setUTCDate(date.getUTCDate() + Number(days || 0));
+    return date.toISOString().slice(0, 10);
+  }
+
+  function ivyEasternOffset(dateOnly) {
+    const clean = ivyPayablesDate(dateOnly);
+    if (!clean) return '-04:00';
+    const probe = new Date(clean + 'T12:00:00Z');
+    const label = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      timeZoneName: 'shortOffset',
+      hour: '2-digit'
+    }).formatToParts(probe).find(part => part.type === 'timeZoneName')?.value || 'GMT-4';
+    const match = label.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?/i);
+    if (!match) return '-04:00';
+    return (match[1] === '-' ? '-' : '+') +
+      String(Number(match[2])).padStart(2, '0') + ':' +
+      String(Number(match[3] || 0)).padStart(2, '0');
+  }
+
+  async function ivySpectoraInspectionsForRange(start, end) {
+    const cleanStart = ivyPayablesDate(start);
+    const cleanEnd = ivyPayablesDate(end);
+    if (!cleanStart || !cleanEnd || cleanStart > cleanEnd) {
+      throw authError('A valid vendor payables date range is required', 400);
+    }
+
+    const startIso = cleanStart + 'T00:00:00' + ivyEasternOffset(cleanStart);
+    const endIso = cleanEnd + 'T23:59:59' + ivyEasternOffset(cleanEnd);
+    const records = [];
+
+    for (let page = 1; page <= 10; page += 1) {
+      const response = await fetchUpstream('Vendor payables inspection lookup', query('/v2/inspections', {
+        'filter[datetime_greater_than]': startIso,
+        'filter[datetime_less_than]': endIso,
+        'page[number]': String(page),
+        'page[size]': '200',
+        sort: 'datetime'
+      }));
+      const data = Array.isArray(response?.data) ? response.data : [];
+      records.push(...data);
+      const pagination = response?.meta?.pagination || {};
+      if (!pagination.next || data.length < 200) break;
+    }
+
+    return records;
+  }
+
+  async function ivyAllVendorActivity(sheetsToken) {
+    const rows = await readRows(
+      sheetsToken,
+      config.operations.spreadsheetId,
+      "'Vendor Activity'!A2:O"
+    );
+    return rows.map(row => ({
+      receivedAt: String(row[0] || ''),
+      entryType: String(row[1] || ''),
+      vendor: String(row[2] || ''),
+      service: String(row[3] || ''),
+      propertyAddress: String(row[4] || ''),
+      spectoraInspectionId: String(row[5] || ''),
+      inspectionDate: String(row[6] || ''),
+      sourceEmailId: String(row[7] || ''),
+      attachmentFilename: String(row[8] || ''),
+      vendorCost: row[9] === '' || row[9] == null ? null : Number(row[9]),
+      invoiceNumber: String(row[10] || ''),
+      status: String(row[11] || ''),
+      spectoraAttachmentId: String(row[12] || ''),
+      uploadedAt: String(row[13] || ''),
+      notes: String(row[14] || '')
+    })).filter(item => item.receivedAt || item.vendor || item.status);
+  }
+
+  async function ivyAttachmentsForPayables(inspections) {
+    const relevant = inspections;
+    const result = {};
+
+    for (let index = 0; index < relevant.length; index += 8) {
+      const batch = relevant.slice(index, index + 8);
+      const fetched = await Promise.all(batch.map(async inspection => {
+        const response = await fetchUpstream(
+          'Vendor payables attachment lookup',
+          query('/v2/inspection_attachments', {
+            'filter[inspection_id]': String(inspection.id || ''),
+            'filter[report]': 'true',
+            'page[size]': '200',
+            sort: '-created_at'
+          })
+        );
+        return [
+          String(inspection.id || ''),
+          Array.isArray(response?.data) ? response.data : []
+        ];
+      }));
+      for (const [inspectionId, attachments] of fetched) {
+        result[inspectionId] = attachments;
+      }
+    }
+
+    return result;
+  }
+
+  async function ivyBuildPayables(sheetsToken, start, end) {
+    const [inspections, activity] = await Promise.all([
+      ivySpectoraInspectionsForRange(start, end),
+      ivyAllVendorActivity(sheetsToken)
+    ]);
+    const attachmentsByInspection = await ivyAttachmentsForPayables(inspections);
+    return buildVendorPayablesReport({
+      inspections,
+      activities: activity,
+      attachmentsByInspection,
+      start,
+      end
+    });
+  }
+
+  function ivyMoney(value) {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD'
+    }).format(Number(value || 0));
+  }
+
+  function ivyPayablesText(report) {
+    const lines = [
+      'IVY Vendor Payables Report',
+      'Pay period: ' + report.start + ' through ' + report.end,
+      '',
+      'Spectora inspections checked: ' + report.inspectionCount,
+      'Vendor services found: ' + report.vendorServiceCount,
+      ''
+    ];
+
+    for (const group of report.groups) {
+      lines.push(group.vendor);
+      for (const row of group.rows) {
+        lines.push(
+          '- ' + row.propertyAddress +
+          ' | ' + String(row.inspectionDate || '').slice(0, 10) +
+          ' | Report: ' + (row.reportReceived ? 'Received' : 'MISSING') +
+          ' | Invoice: ' + (row.invoiceReceived ? 'Received' : 'MISSING') +
+          ' | Amount: ' + (row.amountDue == null ? 'Review' : ivyMoney(row.amountDue)) +
+          ' | ' + row.status
+        );
+      }
+      lines.push('Vendor subtotal: ' + ivyMoney(group.payableTotal));
+      lines.push('');
+    }
+
+    lines.push('Known payable total: ' + ivyMoney(report.payableTotal));
+    lines.push('');
+    lines.push('Amounts marked Needs Review are not guessed and should be confirmed before payroll.');
+    return lines.join('\n');
+  }
+
+  function ivyEscapeHtml(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function ivyPayablesHtml(report) {
+    const vendorSections = report.groups.map(group => {
+      const rows = group.rows.map(row =>
+        '<tr>' +
+          '<td style="padding:8px;border-bottom:1px solid #eee;">' + ivyEscapeHtml(row.propertyAddress) + '</td>' +
+          '<td style="padding:8px;border-bottom:1px solid #eee;">' + ivyEscapeHtml(String(row.inspectionDate || '').slice(0, 10)) + '</td>' +
+          '<td style="padding:8px;border-bottom:1px solid #eee;">' + ivyEscapeHtml(row.spectoraServices || row.service) + '</td>' +
+          '<td style="padding:8px;border-bottom:1px solid #eee;">' + (row.reportReceived ? 'Received' : '<strong>MISSING</strong>') + '</td>' +
+          '<td style="padding:8px;border-bottom:1px solid #eee;">' + (row.invoiceReceived ? 'Received' : '<strong>MISSING</strong>') + '</td>' +
+          '<td style="padding:8px;border-bottom:1px solid #eee;text-align:right;">' + (row.amountDue == null ? 'Review' : ivyEscapeHtml(ivyMoney(row.amountDue))) + '</td>' +
+          '<td style="padding:8px;border-bottom:1px solid #eee;">' + ivyEscapeHtml(row.status) + '</td>' +
+        '</tr>'
+      ).join('');
+
+      return '<h3 style="margin:28px 0 8px;">' + ivyEscapeHtml(group.vendor) + '</h3>' +
+        '<table cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;font-size:13px;">' +
+          '<tr style="background:#f5f5f5;">' +
+            '<th align="left" style="padding:8px;">Property</th>' +
+            '<th align="left" style="padding:8px;">Inspection</th>' +
+            '<th align="left" style="padding:8px;">Spectora Service</th>' +
+            '<th align="left" style="padding:8px;">Report</th>' +
+            '<th align="left" style="padding:8px;">Invoice</th>' +
+            '<th align="right" style="padding:8px;">Amount</th>' +
+            '<th align="left" style="padding:8px;">Status</th>' +
+          '</tr>' + rows +
+        '</table>' +
+        '<div style="margin-top:8px;font-weight:700;">' +
+          'Vendor subtotal: ' + ivyEscapeHtml(ivyMoney(group.payableTotal)) +
+          ' &nbsp; | &nbsp; Missing reports: ' + group.missingReports +
+          ' &nbsp; | &nbsp; Missing invoices: ' + group.missingInvoices +
+          ' &nbsp; | &nbsp; Needs review: ' + group.needsReview +
+        '</div>';
+    }).join('');
+
+    return '<div style="font-family:Arial,Helvetica,sans-serif;color:#171717;max-width:980px;">' +
+      '<div style="font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#b0163a;font-weight:700;">Inspectology Operations</div>' +
+      '<h2 style="margin:5px 0;">IVY Vendor Payables Report</h2>' +
+      '<div style="color:#666;">Pay period: ' + ivyEscapeHtml(report.start) + ' through ' + ivyEscapeHtml(report.end) + '</div>' +
+      '<div style="margin:18px 0;padding:14px;border:1px solid #ddd;border-radius:10px;">' +
+        '<strong>Spectora inspections checked:</strong> ' + report.inspectionCount +
+        ' &nbsp; | &nbsp; <strong>Vendor services:</strong> ' + report.vendorServiceCount +
+        ' &nbsp; | &nbsp; <strong>Known payable total:</strong> ' + ivyEscapeHtml(ivyMoney(report.payableTotal)) +
+      '</div>' +
+      vendorSections +
+      '<div style="margin-top:28px;padding:12px;background:#fff8e8;border:1px solid #ead8a7;border-radius:8px;">' +
+        'Anything marked Needs Review is intentionally excluded from guessed pricing and should be confirmed before payroll.' +
+      '</div>' +
+    '</div>';
+  }
+
+  async function ivyEmailPayables(report, recipient) {
+    const to = String(recipient || config.operations.payablesEmailTo || '').trim().toLowerCase();
+    if (!to) throw authError('Vendor payables email recipient is not configured', 503);
+    return sendIvyEmail(
+      { resendApiKey: config.operations.resendApiKey },
+      {
+        to,
+        subject: 'IVY Vendor Payables | ' + report.start + ' - ' + report.end,
+        text: ivyPayablesText(report),
+        html: ivyPayablesHtml(report)
+      }
+    );
+  }
+
+  function ivyPayablesMonthNumber(value) {
+    const key = String(value || '').trim().slice(0, 3).toLowerCase();
+    const months = {
+      jan: '01', feb: '02', mar: '03', apr: '04',
+      may: '05', jun: '06', jul: '07', aug: '08',
+      sep: '09', oct: '10', nov: '11', dec: '12'
+    };
+    return months[key] || '';
+  }
+
+  function ivyPayablesRangeFromPrompt(prompt) {
+    const text = String(prompt || '');
+
+    const iso = [...text.matchAll(/\b(20\d{2}-\d{2}-\d{2})\b/g)].map(match => match[1]);
+    if (iso.length >= 2 && ivyPayablesDate(iso[0]) && ivyPayablesDate(iso[1])) {
+      return { start: iso[0], end: iso[1] };
+    }
+
+    const sameMonth = text.match(
+      /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})\s*(?:-|–|—|to|through)\s*(\d{1,2})\s*,?\s*(20\d{2})\b/i
+    );
+    if (sameMonth) {
+      const month = ivyPayablesMonthNumber(sameMonth[1]);
+      const start = sameMonth[4] + '-' + month + '-' + String(Number(sameMonth[2])).padStart(2, '0');
+      const end = sameMonth[4] + '-' + month + '-' + String(Number(sameMonth[3])).padStart(2, '0');
+      if (ivyPayablesDate(start) && ivyPayablesDate(end)) return { start, end };
+    }
+
+    const crossMonth = text.match(
+      /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})\s*(?:-|–|—|to|through)\s*(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})\s*,?\s*(20\d{2})\b/i
+    );
+    if (crossMonth) {
+      const start = crossMonth[5] + '-' + ivyPayablesMonthNumber(crossMonth[1]) + '-' + String(Number(crossMonth[2])).padStart(2, '0');
+      const end = crossMonth[5] + '-' + ivyPayablesMonthNumber(crossMonth[3]) + '-' + String(Number(crossMonth[4])).padStart(2, '0');
+      if (ivyPayablesDate(start) && ivyPayablesDate(end)) return { start, end };
+    }
+
+    return null;
+  }
+
+  function ivyLooksLikePayablesCommand(prompt) {
+    return /vendor\s+payable|payables|vendor\s+payment|payroll\s+report|vendor\s+report/i.test(String(prompt || ''));
+  }
+
+  function ivyNewYorkClock(now = new Date()) {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      weekday: 'short',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      hourCycle: 'h23'
+    }).formatToParts(now);
+    const get = type => parts.find(part => part.type === type)?.value || '';
+    return {
+      weekday: get('weekday'),
+      date: get('year') + '-' + get('month') + '-' + get('day'),
+      hour: Number(get('hour'))
+    };
+  }
+
+  function ivyPayablesMondayIsDue(dateOnly) {
+    const date = ivyPayablesDate(dateOnly);
+    const anchor = ivyPayablesDate(config.operations.payablesAnchorMonday);
+    if (!date || !anchor) return false;
+    const diff = Math.round(
+      (Date.parse(date + 'T12:00:00Z') - Date.parse(anchor + 'T12:00:00Z')) / 86_400_000
+    );
+    return diff >= 0 && diff % 14 === 0;
+  }
+
+  async function ivyPayablesAlreadySent(sheetsToken, periodEnd) {
+    const rows = await readRows(
+      sheetsToken,
+      config.operations.spreadsheetId,
+      "'Weekly Summary'!A2:H"
+    );
+    return rows.some(row =>
+      String(row[0] || '') === String(periodEnd || '') &&
+      /ivy payroll report sent/i.test(String(row[7] || ''))
+    );
+  }
+
+  async function ivyRecordPayablesRun(sheetsToken, report, recipient) {
+    const summary = report.groups.map(group => ({
+      vendor: group.vendor,
+      service: 'Vendor Payables',
+      inspectionCount: group.rows.length,
+      totalVendorCost: group.payableTotal,
+      missingReports: group.missingReports,
+      needsReview: group.needsReview,
+      notes:
+        'IVY payroll report sent to ' + recipient +
+        '. Missing invoices: ' + group.missingInvoices +
+        '. Pay period: ' + report.start + ' through ' + report.end + '.'
+    }));
+    await appendWeeklySummary(
+      sheetsToken,
+      config.operations,
+      report.end,
+      summary
+    );
+  }
+
+  function ivyCronAuthorized(req) {
+    const secret = String(config.operations.cronSecret || '');
+    if (!secret) return false;
+    const supplied = String(req.headers.authorization || '');
+    const expected = 'Bearer ' + secret;
+    if (supplied.length !== expected.length) return false;
+    return crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
+  }
+
+  async function ivyRecentOperations(sheetsToken) {
+    const activityRows = await readRows(
+      sheetsToken,
+      config.operations.spreadsheetId,
+      "'Vendor Activity'!A2:O200"
+    );
+    const exceptionRows = await readRows(
+      sheetsToken,
+      config.operations.spreadsheetId,
+      "'Exceptions'!A2:J200"
+    );
+
+    const activity = activityRows
+      .map(row => ({
+        receivedAt: String(row[0] || ''),
+        entryType: String(row[1] || ''),
+        vendor: String(row[2] || ''),
+        service: String(row[3] || ''),
+        propertyAddress: String(row[4] || ''),
+        spectoraInspectionId: String(row[5] || ''),
+        inspectionDate: String(row[6] || ''),
+        sourceEmailId: String(row[7] || ''),
+        attachmentFilename: String(row[8] || ''),
+        vendorCost: row[9] ?? '',
+        invoiceNumber: String(row[10] || ''),
+        status: String(row[11] || ''),
+        spectoraAttachmentId: String(row[12] || ''),
+        uploadedAt: String(row[13] || ''),
+        notes: String(row[14] || '')
+      }))
+      .filter(item => item.receivedAt || item.vendor || item.status)
+      .reverse();
+
+    const exceptions = exceptionRows
+      .map(row => ({
+        createdAt: String(row[0] || ''),
+        vendor: String(row[1] || ''),
+        propertyAddress: String(row[2] || ''),
+        reason: String(row[3] || ''),
+        sourceEmailId: String(row[4] || ''),
+        attachmentFilename: String(row[5] || ''),
+        candidateInspections: String(row[6] || ''),
+        status: String(row[7] || ''),
+        resolvedAt: String(row[8] || ''),
+        resolutionNotes: String(row[9] || '')
+      }))
+      .filter(item => item.status.toLowerCase() !== 'resolved')
+      .filter(item => item.createdAt || item.reason)
+      .reverse();
+
+    return { activity, exceptions };
+  }
+
+  async function ivyExistingKeys(sheetsToken) {
+    const activityRows = await readRows(
+      sheetsToken,
+      config.operations.spreadsheetId,
+      "'Vendor Activity'!A2:O"
+    );
+    const exceptionRows = await readRows(
+      sheetsToken,
+      config.operations.spreadsheetId,
+      "'Exceptions'!A2:J"
+    );
+
+    const keys = new Set();
+    for (const row of activityRows) {
+      const sourceEmailId = String(row[7] || '');
+      const filename = String(row[8] || '');
+      if (sourceEmailId) keys.add(ivyLedgerKey(sourceEmailId, filename));
+    }
+    for (const row of exceptionRows) {
+      const sourceEmailId = String(row[4] || '');
+      const filename = String(row[5] || '');
+      if (sourceEmailId) keys.add(ivyLedgerKey(sourceEmailId, filename));
+    }
+    return keys;
+  }
+
+  function ivyCandidateSummary(candidates = []) {
+    return candidates.slice(0, 5).map(item => {
+      const inspection = item.inspection || {};
+      return [
+        String(inspection.id || ''),
+        inspectionAddress(inspection),
+        'score=' + String(item.score || 0)
+      ].filter(Boolean).join(' | ');
+    }).join('\n');
+  }
+
+  async function ivyLogException(sheetsToken, message, vendor, reason, options = {}) {
+    const filename = String(options.filename || message.filenames?.[0] || '');
+    await appendException(sheetsToken, config.operations, {
+      createdAt: new Date().toISOString(),
+      vendor: vendor?.company || '',
+      propertyAddress: options.propertyAddress || '',
+      reason,
+      sourceEmailId: message.sourceEmailId,
+      attachmentFilename: filename,
+      candidateInspections: ivyCandidateSummary(options.candidates || []),
+      status: 'Open'
+    });
+  }
+
+  async function processIvyReceivedEmail(req, event) {
+    const emailId = String(event?.data?.email_id || '').trim();
+    if (!emailId) throw authError('Resend received email ID is missing', 400);
+    if (!config.operations.resendApiKey) {
+      throw authError('Resend API is not configured', 503);
+    }
+
+    const [email, attachments] = await Promise.all([
+      retrieveReceivedEmail(config.operations.resendApiKey, emailId),
+      listReceivedAttachments(config.operations.resendApiKey, emailId)
+    ]);
+    const message = receivedEmailToMessage(event, email, attachments);
+    const sheetsToken = await googleSheetsAccessToken(
+      config,
+      String(req.headers['x-vercel-oidc-token'] || '')
+    );
+    const existingKeys = await ivyExistingKeys(sheetsToken);
+
+    const classified = classifyVendor(message);
+    const defaultFilename = message.filenames?.[0] || '';
+    const defaultKey = ivyLedgerKey(message.sourceEmailId, defaultFilename);
+
+    if (!classified.vendor) {
+      if (!existingKeys.has(defaultKey)) {
+        await ivyLogException(
+          sheetsToken,
+          message,
+          null,
+          classified.ambiguous ? 'Vendor classification is ambiguous' : 'Vendor is not recognized'
+        );
+      }
+      return { action: 'review', reason: 'Vendor not confidently recognized' };
+    }
+
+    const vendor = classified.vendor;
+    const document = classifyDocument(message, vendor);
+
+    if (document.type === 'ignore') {
+      if (!existingKeys.has(defaultKey)) {
+        await appendVendorActivity(sheetsToken, config.operations, {
+          receivedAt: message.receivedAt,
+          entryType: 'Ignored',
+          vendor: vendor.company,
+          service: vendor.service,
+          sourceEmailId: message.sourceEmailId,
+          attachmentFilename: defaultFilename,
+          status: 'Ignored',
+          notes: document.reason
+        });
+      }
+      return { action: 'ignore', vendor: vendor.company, reason: document.reason };
+    }
+
+    if (document.type === 'invoice') {
+      if (!existingKeys.has(defaultKey)) {
+        const invoice = extractInvoiceData([message.subject, message.body].join('\n'));
+        const street = extractStreetCandidates({
+          subject: invoice.project,
+          body: invoice.project,
+          filenames: []
+        })[0]?.raw || invoice.project || '';
+
+        await appendVendorActivity(sheetsToken, config.operations, {
+          receivedAt: message.receivedAt,
+          entryType: 'Invoice',
+          vendor: vendor.company,
+          service: vendor.service,
+          propertyAddress: street,
+          sourceEmailId: message.sourceEmailId,
+          attachmentFilename: defaultFilename,
+          vendorCost: invoice.amount,
+          invoiceNumber: invoice.invoiceNumber,
+          status: 'Received',
+          notes: invoice.project
+            ? 'Vendor invoice received.'
+            : 'Vendor invoice received. Property matching still needed.'
+        });
+      }
+      return { action: 'ledger', vendor: vendor.company, documentType: 'invoice' };
+    }
+
+    if (document.type !== 'report') {
+      if (!existingKeys.has(defaultKey)) {
+        await ivyLogException(sheetsToken, message, vendor, document.reason);
+      }
+      return { action: 'review', vendor: vendor.company, reason: document.reason };
+    }
+
+    if (!ivyHasProcessedEmail(existingKeys, message.sourceEmailId)) {
+      try {
+        await ivySendReportThanks(message);
+      } catch (error) {
+        await ivyLogException(
+          sheetsToken,
+          message,
+          vendor,
+          'Report received, but IVY could not send the thank-you email'
+        );
+      }
+    }
+
+    const streets = extractStreetCandidates(message);
+    if (!streets.length) {
+      if (!existingKeys.has(defaultKey)) {
+        await ivyLogException(
+          sheetsToken,
+          message,
+          vendor,
+          'No street address found in the report email or attachment name'
+        );
+      }
+      return { action: 'review', vendor: vendor.company, reason: 'No address found' };
+    }
+
+    const inspectionSearch = await searchSpectoraInspections(config.apiKey, streets[0].raw);
+    const inspections = Array.isArray(inspectionSearch?.data) ? inspectionSearch.data : [];
+    const match = selectInspectionMatch({ inspections, message, vendor });
+
+    if (!match.matched) {
+      if (!existingKeys.has(defaultKey)) {
+        await ivyLogException(
+          sheetsToken,
+          message,
+          vendor,
+          match.reason,
+          { propertyAddress: streets[0].raw, candidates: match.candidates }
+        );
+      }
+      return { action: 'review', vendor: vendor.company, reason: match.reason };
+    }
+
+    const inspection = match.inspection;
+    const existingAttachmentResponse = await listSpectoraAttachments(config.apiKey, inspection.id);
+    const existingAttachments = Array.isArray(existingAttachmentResponse?.data)
+      ? existingAttachmentResponse.data
+      : [];
+    const attachmentType = resolveAttachmentType(vendor, process.env);
+
+    const reportFiles = message.attachments.filter(item =>
+      /\.pdf$/i.test(item.filename || '') &&
+      !/^well yield disclaimer\.pdf$/i.test(item.filename || '')
+    );
+
+    if (!reportFiles.length) {
+      if (!existingKeys.has(defaultKey)) {
+        await ivyLogException(
+          sheetsToken,
+          message,
+          vendor,
+          'No supported PDF report attachment was found',
+          { propertyAddress: inspectionAddress(inspection) || streets[0].raw }
+        );
+      }
+      return { action: 'review', vendor: vendor.company, reason: 'No PDF report found' };
+    }
+
+    const results = [];
+    for (const file of reportFiles) {
+      const key = ivyLedgerKey(message.sourceEmailId, file.filename);
+      if (existingKeys.has(key)) {
+        results.push({ filename: file.filename, action: 'already_processed' });
+        continue;
+      }
+
+      const duplicate = duplicateAttachment(existingAttachments, file.filename);
+      if (duplicate) {
+        await appendVendorActivity(sheetsToken, config.operations, {
+          receivedAt: message.receivedAt,
+          entryType: 'Report',
+          vendor: vendor.company,
+          service: vendor.service,
+          propertyAddress: inspectionAddress(inspection) || streets[0].raw,
+          spectoraInspectionId: String(inspection.id || ''),
+          inspectionDate: inspectionDateTime(inspection),
+          sourceEmailId: message.sourceEmailId,
+          attachmentFilename: file.filename,
+          status: 'Duplicate',
+          notes: 'Same filename is already attached in Spectora.'
+        });
+        results.push({ filename: file.filename, action: 'duplicate' });
+        continue;
+      }
+
+      if (!config.operations.autoUpload) {
+        await appendVendorActivity(sheetsToken, config.operations, {
+          receivedAt: message.receivedAt,
+          entryType: 'Report',
+          vendor: vendor.company,
+          service: vendor.service,
+          propertyAddress: inspectionAddress(inspection) || streets[0].raw,
+          spectoraInspectionId: String(inspection.id || ''),
+          inspectionDate: inspectionDateTime(inspection),
+          sourceEmailId: message.sourceEmailId,
+          attachmentFilename: file.filename,
+          status: 'Matched',
+          notes: attachmentType
+            ? 'Dry run: confidently matched. Automatic upload is disabled.'
+            : 'Dry run: confidently matched. Spectora attachment type still needs configuration.'
+        });
+        results.push({ filename: file.filename, action: 'matched_dry_run' });
+        continue;
+      }
+
+      if (!attachmentType) {
+        await ivyLogException(
+          sheetsToken,
+          message,
+          vendor,
+          'Spectora attachment type is not configured for this vendor',
+          {
+            filename: file.filename,
+            propertyAddress: inspectionAddress(inspection) || streets[0].raw
+          }
+        );
+        results.push({ filename: file.filename, action: 'review' });
+        continue;
+      }
+
+      let attachment = file;
+      if (!attachment.downloadUrl && attachment.id) {
+        attachment = {
+          ...attachment,
+          ...require('./ops/resend-inbound').attachmentMeta(
+            await retrieveReceivedAttachment(
+              config.operations.resendApiKey,
+              emailId,
+              attachment.id
+            )
+          )
+        };
+      }
+      if (!attachment.downloadUrl) {
+        await ivyLogException(
+          sheetsToken,
+          message,
+          vendor,
+          'Resend did not provide a downloadable attachment URL',
+          {
+            filename: file.filename,
+            propertyAddress: inspectionAddress(inspection) || streets[0].raw
+          }
+        );
+        results.push({ filename: file.filename, action: 'review' });
+        continue;
+      }
+
+      const fileBuffer = await downloadAttachment(attachment.downloadUrl);
+      const upload = await uploadSpectoraAttachment(config.apiKey, {
+        inspectionId: inspection.id,
+        file: fileBuffer,
+        filename: file.filename,
+        mimeType: file.contentType || 'application/pdf',
+        name: document.displayName || (vendor.company + ' Report'),
+        description: vendor.company + ' third-party report received by Inspectology',
+        attachmentType,
+        report: true,
+        internalOnly: false
+      });
+      const attachmentId = String(upload?.data?.id || upload?.id || '');
+
+      await appendVendorActivity(sheetsToken, config.operations, {
+        receivedAt: message.receivedAt,
+        entryType: 'Report',
+        vendor: vendor.company,
+        service: vendor.service,
+        propertyAddress: inspectionAddress(inspection) || streets[0].raw,
+        spectoraInspectionId: String(inspection.id || ''),
+        inspectionDate: inspectionDateTime(inspection),
+        sourceEmailId: message.sourceEmailId,
+        attachmentFilename: file.filename,
+        status: 'Uploaded',
+        spectoraAttachmentId: attachmentId,
+        uploadedAt: new Date().toISOString(),
+        notes: 'Uploaded automatically by IVY.'
+      });
+      results.push({ filename: file.filename, action: 'uploaded', attachmentId });
+    }
+
+    return {
+      action: config.operations.autoUpload ? 'processed' : 'dry_run',
+      vendor: vendor.company,
+      inspectionId: String(inspection.id || ''),
+      propertyAddress: inspectionAddress(inspection) || streets[0].raw,
+      results
+    };
   }
 
   async function handleRequest(req, res) {
@@ -1806,6 +2769,105 @@ function createPortal(options = {}) {
       if (req.method === 'GET' && pathname === '/api/health') {
         sendJson(res, 200, { status: 'ok', service: 'spectora-agent-portal', mode: config.mode }); status = 200; return;
       }
+      if (req.method === 'POST' && pathname === '/api/ops/resend-webhook') {
+        if (!config.operations.resendWebhookSecret) {
+          sendJson(res, 503, { error: 'IVY inbound webhook is not configured' });
+          status = 503;
+          return;
+        }
+
+        const rawBody = await readRawBody(req, 2_000_000);
+        try {
+          verifyResendWebhook({
+            rawBody,
+            headers: req.headers,
+            secret: config.operations.resendWebhookSecret,
+            nowMs: nowMs()
+          });
+        } catch {
+          sendJson(res, 401, { error: 'Invalid webhook signature' });
+          status = 401;
+          return;
+        }
+
+        let event;
+        try {
+          event = JSON.parse(rawBody || '{}');
+        } catch {
+          sendJson(res, 400, { error: 'Malformed webhook JSON' });
+          status = 400;
+          return;
+        }
+
+        if (event.type !== 'email.received') {
+          sendJson(res, 200, { status: 'ignored', eventType: event.type || '' });
+          status = 200;
+          return;
+        }
+
+        const result = await processIvyReceivedEmail(req, event);
+        sendJson(res, 200, {
+          status: 'ok',
+          mode: config.operations.autoUpload ? 'auto-upload' : 'dry-run',
+          result
+        });
+        status = 200;
+        return;
+      }
+
+      if (req.method === 'GET' && pathname === '/api/cron/vendor-payables') {
+        if (!ivyCronAuthorized(req)) {
+          sendJson(res, 401, { error: 'Unauthorized' });
+          status = 401;
+          return;
+        }
+
+        const clock = ivyNewYorkClock();
+        if (clock.weekday !== 'Mon' || clock.hour !== 8 || !ivyPayablesMondayIsDue(clock.date)) {
+          sendJson(res, 200, {
+            status: 'skipped',
+            reason: 'Not a scheduled IVY payroll Monday at 8 AM Eastern',
+            localDate: clock.date,
+            localHour: clock.hour
+          });
+          status = 200;
+          return;
+        }
+
+        const periodEnd = ivyPayablesDateAdd(clock.date, -1);
+        const periodStart = ivyPayablesDateAdd(clock.date, -14);
+        const token = await googleSheetsAccessToken(
+          config,
+          String(req.headers['x-vercel-oidc-token'] || '')
+        );
+
+        if (await ivyPayablesAlreadySent(token, periodEnd)) {
+          sendJson(res, 200, {
+            status: 'skipped',
+            reason: 'IVY vendor payables report was already sent for this pay period',
+            periodStart,
+            periodEnd
+          });
+          status = 200;
+          return;
+        }
+
+        const report = await ivyBuildPayables(token, periodStart, periodEnd);
+        const recipient = config.operations.payablesEmailTo;
+        await ivyEmailPayables(report, recipient);
+        await ivyRecordPayablesRun(token, report, recipient);
+
+        sendJson(res, 200, {
+          status: 'sent',
+          sentTo: recipient,
+          periodStart,
+          periodEnd,
+          knownPayableTotal: report.payableTotal
+        });
+        status = 200;
+        return;
+      }
+
       if (req.method === 'GET' && pathname === '/api/design-preview') {
         const targetEnv = String(process.env.VERCEL_TARGET_ENV || process.env.VERCEL_ENV || '').toLowerCase();
         if (targetEnv === 'production') {
@@ -2258,6 +3320,254 @@ function createPortal(options = {}) {
           status = 200;
           return;
         }
+        if (req.method === 'GET' && pathname === '/api/admin/ivy/payables') {
+          const start = ivyPayablesDate(url.searchParams.get('start'));
+          const end = ivyPayablesDate(url.searchParams.get('end'));
+          if (!start || !end || start > end) {
+            sendJson(res, 400, { error: 'Use start and end dates in YYYY-MM-DD format' });
+            status = 400;
+            return;
+          }
+          const token = await googleSheetsAccessToken(
+            config,
+            String(req.headers['x-vercel-oidc-token'] || '')
+          );
+          const report = await ivyBuildPayables(token, start, end);
+          sendJson(res, 200, { status: 'ok', report });
+          status = 200;
+          return;
+        }
+
+        if (req.method === 'POST' && pathname === '/api/admin/ivy/payables/email') {
+          const body = await readJsonBody(req, 12_000);
+          const start = ivyPayablesDate(body.start);
+          const end = ivyPayablesDate(body.end);
+          if (!start || !end || start > end) {
+            sendJson(res, 400, { error: 'Use start and end dates in YYYY-MM-DD format' });
+            status = 400;
+            return;
+          }
+          const token = await googleSheetsAccessToken(
+            config,
+            String(req.headers['x-vercel-oidc-token'] || '')
+          );
+          const report = await ivyBuildPayables(token, start, end);
+          await ivyEmailPayables(report, body.to || config.operations.payablesEmailTo);
+          sendJson(res, 200, {
+            status: 'ok',
+            sentTo: body.to || config.operations.payablesEmailTo,
+            report
+          });
+          status = 200;
+          return;
+        }
+
+        if (req.method === 'GET' && pathname === '/api/admin/ivy/activity') {
+          const token = await googleSheetsAccessToken(
+            config,
+            String(req.headers['x-vercel-oidc-token'] || '')
+          );
+          const recent = await ivyRecentOperations(token);
+          sendJson(res, 200, {
+            status: 'ok',
+            activity: recent.activity.slice(0, 25),
+            exceptions: recent.exceptions.slice(0, 25)
+          });
+          status = 200;
+          return;
+        }
+
+        if (req.method === 'POST' && pathname === '/api/admin/ivy/command') {
+          const body = await readJsonBody(req, 12_000);
+          const prompt = String(body.prompt || '').trim();
+          if (!prompt || prompt.length > 800) {
+            sendJson(res, 400, { error: 'IVY commands must be between 1 and 800 characters' });
+            status = 400;
+            return;
+          }
+
+          const token = await googleSheetsAccessToken(
+            config,
+            String(req.headers['x-vercel-oidc-token'] || '')
+          );
+
+          const payablesRange = ivyLooksLikePayablesCommand(prompt)
+            ? ivyPayablesRangeFromPrompt(prompt)
+            : null;
+          if (payablesRange) {
+            const report = await ivyBuildPayables(token, payablesRange.start, payablesRange.end);
+            sendJson(res, 200, {
+              status: 'ok',
+              answer: ivyPayablesText(report),
+              report,
+              model: 'ivy-payables'
+            });
+            status = 200;
+            return;
+          }
+
+          const recent = await ivyRecentOperations(token);
+          const result = await askIvyOperations(
+            config,
+            prompt,
+            identity,
+            recent.activity,
+            recent.exceptions
+          );
+
+          sendJson(res, 200, {
+            status: 'ok',
+            answer: result.answer,
+            model: result.model
+          });
+          status = 200;
+          return;
+        }
+
+        if (req.method === 'GET' && pathname === '/api/admin/ops/resend-key-diagnostic') {
+          const key = String(config.operations.resendApiKey || '');
+          const fingerprint = key
+            ? crypto.createHash('sha256').update(key).digest('hex').slice(0, 12)
+            : '';
+          sendJson(res, 200, {
+            status: 'ok',
+            configured: Boolean(key),
+            startsWithRe: key.startsWith('re_'),
+            length: key.length,
+            fingerprint
+          });
+          status = 200;
+          return;
+        }
+
+        if (req.method === 'GET' && pathname === '/api/admin/ops/status') {
+          sendJson(res, 200, {
+            status: 'ok',
+            ivy: {
+              email: config.operations.ivyEmail,
+              spreadsheetConfigured: Boolean(config.operations.spreadsheetId),
+              inboundWebhookConfigured: Boolean(config.operations.resendWebhookSecret),
+              resendApiConfigured: Boolean(config.operations.resendApiKey),
+              autoUpload: config.operations.autoUpload,
+              thankReports: config.operations.thankReports
+            }
+          });
+          status = 200;
+          return;
+        }
+
+        if (req.method === 'GET' && pathname === '/api/admin/ops/sheet-test') {
+          const token = await googleSheetsAccessToken(
+            config,
+            String(req.headers['x-vercel-oidc-token'] || '')
+          );
+          const rows = await readRows(
+            token,
+            config.operations.spreadsheetId,
+            "'Vendors'!A1:F20"
+          );
+          sendJson(res, 200, {
+            status: 'ok',
+            spreadsheetId: config.operations.spreadsheetId,
+            vendorRows: Math.max(0, rows.length - 1),
+            header: rows[0] || []
+          });
+          status = 200;
+          return;
+        }
+
+        if (req.method === 'GET' && pathname === '/api/admin/ops/attachment-types') {
+          const targets = [
+            {
+              name: 'Well Yield Report',
+              patterns: [/well[^\\n]{0,40}yield/i, /yield[^\\n]{0,40}well/i]
+            },
+            {
+              name: 'Water Quality Report',
+              patterns: [
+                /water[^\\n]{0,50}(quality|test|testing|potab|bacteria|lead|coliform)/i,
+                /(quality|test|testing|potab|bacteria|lead|coliform)[^\\n]{0,50}water/i
+              ]
+            },
+            {
+              name: 'Termite Report',
+              patterns: [/termite/i, /\\bwdi\\b/i, /\\bwdo\\b/i, /wood[- ]?destroy/i]
+            },
+            {
+              name: 'Chimney Report',
+              patterns: [/chimney/i, /chim\\s*insp/i, /fireplace/i]
+            }
+          ].map(item => ({
+            ...item,
+            attachmentTypes: new Set(),
+            examples: []
+          }));
+
+          const allAttachmentTypes = new Map();
+          let scanned = 0;
+          let pagesScanned = 0;
+
+          for (let page = 1; page <= 10; page += 1) {
+            const response = await listSpectoraAttachmentPage(config.apiKey, page, 200);
+            const items = Array.isArray(response?.data) ? response.data : [];
+            pagesScanned += 1;
+            scanned += items.length;
+
+            for (const item of items) {
+              const attributes = item?.attributes || {};
+              const type = String(attributes.attachment_type || '').trim();
+              const name = String(attributes.name || '').trim();
+              const filename = String(
+                attributes.file_file_name ||
+                attributes.filename ||
+                attributes.file_name ||
+                ''
+              ).trim();
+              const description = String(attributes.description || '').trim();
+              const haystack = [name, filename, description].filter(Boolean).join('\\n');
+
+              if (type) allAttachmentTypes.set(type, (allAttachmentTypes.get(type) || 0) + 1);
+
+              for (const target of targets) {
+                if (!target.patterns.some(pattern => pattern.test(haystack))) continue;
+                if (type) target.attachmentTypes.add(type);
+                if (target.examples.length < 5) {
+                  target.examples.push({
+                    inspectionId: String(attributes.inspection_id || ''),
+                    name,
+                    filename,
+                    description,
+                    createdAt: String(attributes.created_at || ''),
+                    attachmentType: type
+                  });
+                }
+              }
+            }
+
+            const allFound = targets.every(item => item.attachmentTypes.size > 0);
+            const pagination = response?.meta?.pagination || {};
+            const lastPage = Number(pagination.last || 0);
+            if (allFound || !items.length || (lastPage && page >= lastPage)) break;
+          }
+
+          sendJson(res, 200, {
+            status: 'ok',
+            scanned,
+            pagesScanned,
+            mappings: targets.map(item => ({
+              name: item.name,
+              attachmentTypes: [...item.attachmentTypes],
+              examples: item.examples
+            })),
+            commonAttachmentTypes: [...allAttachmentTypes.entries()]
+              .sort((a, b) => b[1] - a[1])
+              .slice(0, 20)
+              .map(([attachmentType, count]) => ({ attachmentType, count }))
+          });
+          status = 200;
+          return;
+        }
+
         if (req.method === 'POST' && pathname === '/api/admin/invite') {
           const body = await readJsonBody(req);
           const connectionId = validatedPositiveDecimalId(body.connectionId, 'Spectora connection ID');

@@ -81,6 +81,31 @@
 
         <div class="admin-divider"></div>
 
+        <section class="ivy-ops-panel" aria-labelledby="ivyOpsHeading">
+          <div class="ivy-ops-heading">
+            <div>
+              <span class="admin-login-kicker">Inspectology Operations</span>
+              <h2 id="ivyOpsHeading">IVY Operations</h2>
+              <p>Vendor intake and operations-agent readiness.</p>
+            </div>
+            <a
+              class="secondary-button ivy-sheet-link"
+              href="https://docs.google.com/spreadsheets/d/15zah4PYh510csoKw2BkH5p88eZmhh7qFsG1AxxdimVQ/edit"
+              target="_blank"
+              rel="noopener"
+            >Open Operations Sheet</a>
+          </div>
+          <div id="ivyOpsResults" class="launch-readiness-grid"></div>
+          <div class="admin-action-row">
+            <button id="ivySheetTest" class="secondary-button" type="button">Test Google Sheet Connection</button>
+            <button id="ivyAttachmentTypeScan" class="secondary-button" type="button">Inspect Spectora Attachment Types</button>
+          </div>
+          <p id="ivyOpsMessage" class="admin-message" aria-live="polite"></p>
+          <div id="ivyAttachmentTypeResults" class="report-test-results"></div>
+        </section>
+
+        <div class="admin-divider"></div>
+
         <form id="searchForm" class="admin-search">
           <input id="agentSearch" type="search" placeholder="Search agent name or email" autocomplete="off" required minlength="2">
           <button class="primary-button" type="submit">Search</button>
