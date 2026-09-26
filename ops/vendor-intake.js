@@ -175,6 +175,7 @@ function classifyDocument(message = {}, vendor = null) {
 
   if (
     /^invoice\b/i.test(subject) ||
+    (/\binvoices?\b/i.test(subject) && filenames.some(name => /\.pdf$/i.test(name))) ||
     filenames.some(name => /^inv[_ -]/i.test(name)) ||
     /\binvoice\s*#/i.test(combined) ||
     /\bamount due\s*:/i.test(combined)
