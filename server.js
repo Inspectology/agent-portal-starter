@@ -2217,6 +2217,50 @@ function createPortal(options = {}) {
     );
   }
 
+  function ivyPayablesMonthNumber(value) {
+    const key = String(value || '').trim().slice(0, 3).toLowerCase();
+    const months = {
+      jan: '01', feb: '02', mar: '03', apr: '04',
+      may: '05', jun: '06', jul: '07', aug: '08',
+      sep: '09', oct: '10', nov: '11', dec: '12'
+    };
+    return months[key] || '';
+  }
+
+  function ivyPayablesRangeFromPrompt(prompt) {
+    const text = String(prompt || '');
+
+    const iso = [...text.matchAll(/\b(20\d{2}-\d{2}-\d{2})\b/g)].map(match => match[1]);
+    if (iso.length >= 2 && ivyPayablesDate(iso[0]) && ivyPayablesDate(iso[1])) {
+      return { start: iso[0], end: iso[1] };
+    }
+
+    const sameMonth = text.match(
+      /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})\s*(?:-|–|—|to|through)\s*(\d{1,2})\s*,?\s*(20\d{2})\b/i
+    );
+    if (sameMonth) {
+      const month = ivyPayablesMonthNumber(sameMonth[1]);
+      const start = sameMonth[4] + '-' + month + '-' + String(Number(sameMonth[2])).padStart(2, '0');
+      const end = sameMonth[4] + '-' + month + '-' + String(Number(sameMonth[3])).padStart(2, '0');
+      if (ivyPayablesDate(start) && ivyPayablesDate(end)) return { start, end };
+    }
+
+    const crossMonth = text.match(
+      /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})\s*(?:-|–|—|to|through)\s*(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})\s*,?\s*(20\d{2})\b/i
+    );
+    if (crossMonth) {
+      const start = crossMonth[5] + '-' + ivyPayablesMonthNumber(crossMonth[1]) + '-' + String(Number(crossMonth[2])).padStart(2, '0');
+      const end = crossMonth[5] + '-' + ivyPayablesMonthNumber(crossMonth[3]) + '-' + String(Number(crossMonth[4])).padStart(2, '0');
+      if (ivyPayablesDate(start) && ivyPayablesDate(end)) return { start, end };
+    }
+
+    return null;
+  }
+
+  function ivyLooksLikePayablesCommand(prompt) {
+    return /vendor\s+payable|payables|vendor\s+payment|payroll\s+report|vendor\s+report/i.test(String(prompt || ''));
+  }
+
   async function ivyRecentOperations(sheetsToken) {
     const activityRows = await readRows(
       sheetsToken,
@@ -3187,6 +3231,22 @@ function createPortal(options = {}) {
             config,
             String(req.headers['x-vercel-oidc-token'] || '')
           );
+
+          const payablesRange = ivyLooksLikePayablesCommand(prompt)
+            ? ivyPayablesRangeFromPrompt(prompt)
+            : null;
+          if (payablesRange) {
+            const report = await ivyBuildPayables(token, payablesRange.start, payablesRange.end);
+            sendJson(res, 200, {
+              status: 'ok',
+              answer: ivyPayablesText(report),
+              report,
+              model: 'ivy-payables'
+            });
+            status = 200;
+            return;
+          }
+
           const recent = await ivyRecentOperations(token);
           const result = await askIvyOperations(
             config,
