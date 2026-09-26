@@ -109,8 +109,9 @@ function invoiceKey(item) {
   ].join('|');
 }
 
-function directInvoiceFor(activities, inspection, vendor, usedInvoiceKeys) {
+function directInvoicesFor(activities, inspection, vendor, usedInvoiceKeys) {
   const address = inspectionAddress(inspection);
+  const matches = [];
   for (const item of activities) {
     if (normalize(item.entryType) !== 'invoice') continue;
     if (!sameVendor(item.vendor, vendor.company)) continue;
@@ -118,9 +119,9 @@ function directInvoiceFor(activities, inspection, vendor, usedInvoiceKeys) {
     if (usedInvoiceKeys.has(key)) continue;
     if (!sameAddress(item.propertyAddress || item.notes, address)) continue;
     usedInvoiceKeys.add(key);
-    return item;
+    matches.push(item);
   }
-  return null;
+  return matches;
 }
 
 function activityTime(item) {
@@ -289,18 +290,37 @@ function buildVendorPayablesReport({
     const vendors = expectedVendorsForInspection(inspection);
     for (const vendor of vendors) {
       const report = reportFor(activities, inspection, vendor, attachmentsByInspection);
-      let invoice = directInvoiceFor(activities, inspection, vendor, usedInvoiceKeys);
+      let invoices = directInvoicesFor(activities, inspection, vendor, usedInvoiceKeys);
 
-      if (!invoice && vendor.key === 'termite') {
-        invoice = nearbyLynnInvoice(activities, report, usedInvoiceKeys);
+      if (!invoices.length && vendor.key === 'termite') {
+        const nearby = nearbyLynnInvoice(activities, report, usedInvoiceKeys);
+        if (nearby) invoices = [nearby];
       }
 
       const pricing = expectedPrice(vendor, inspection);
-      const invoiceAmount = invoice && Number.isFinite(Number(invoice.vendorCost))
-        ? Number(invoice.vendorCost)
+      const invoiceAmounts = invoices
+        .map(item => Number(item.vendorCost))
+        .filter(Number.isFinite);
+      const invoiceAmount = invoiceAmounts.length
+        ? invoiceAmounts.reduce((sum, value) => sum + value, 0)
         : null;
-      const amount = invoiceAmount != null ? invoiceAmount : pricing.amount;
-      const priceConfidence = invoiceAmount != null ? 'invoice' : pricing.confidence;
+
+      let amount = invoiceAmount != null ? invoiceAmount : pricing.amount;
+      let priceConfidence = invoiceAmount != null ? 'invoice' : pricing.confidence;
+      const notes = [pricing.note || ''];
+
+      if (
+        invoiceAmount != null &&
+        pricing.confidence === 'high' &&
+        pricing.amount != null &&
+        Math.abs(invoiceAmount - pricing.amount) > 0.01
+      ) {
+        priceConfidence = 'review';
+        notes.push(
+          'Invoice total ' + invoiceAmount.toFixed(2) +
+          ' does not match known service-rate total ' + Number(pricing.amount).toFixed(2) + '.'
+        );
+      }
 
       rows.push({
         inspectionId: String(inspection?.id || ''),
@@ -312,9 +332,10 @@ function buildVendorPayablesReport({
         spectoraServices: inspectionServiceText(inspection),
         reportReceived: Boolean(report),
         reportFilename: report?.attachmentFilename || '',
-        invoiceReceived: Boolean(invoice),
-        invoiceNumber: invoice?.invoiceNumber || '',
-        invoiceFilename: invoice?.attachmentFilename || '',
+        invoiceReceived: invoices.length > 0,
+        invoiceCount: invoices.length,
+        invoiceNumber: invoices.map(item => item.invoiceNumber || '').filter(Boolean).join(', '),
+        invoiceFilename: invoices.map(item => item.attachmentFilename || '').filter(Boolean).join(', '),
         amountDue: amount,
         pricingSource: invoiceAmount != null ? 'Invoice' : (
           pricing.confidence === 'high' ? 'Known vendor rate' : 'Needs review'
@@ -322,11 +343,11 @@ function buildVendorPayablesReport({
         pricingBreakdown: pricing.breakdown || [],
         status: rowStatus({
           reportReceived: Boolean(report),
-          invoiceReceived: Boolean(invoice),
+          invoiceReceived: invoices.length > 0,
           amount,
           priceConfidence
         }),
-        notes: pricing.note || ''
+        notes: notes.filter(Boolean).join(' ')
       });
     }
   }
