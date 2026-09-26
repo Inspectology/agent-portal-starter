@@ -18,7 +18,17 @@ async function sheetsJson(accessToken, url, options = {}) {
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const error = new Error(`Google Sheets API returned HTTP ${response.status}`);
+    const googleMessage = String(
+      body?.error?.message ||
+      body?.error?.status ||
+      body?.error ||
+      ''
+    ).trim();
+    const error = new Error(
+      googleMessage
+        ? `Google Sheets API returned HTTP ${response.status}: ${googleMessage}`
+        : `Google Sheets API returned HTTP ${response.status}`
+    );
     error.statusCode = response.status;
     error.body = body;
     throw error;
