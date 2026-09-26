@@ -1,6 +1,6 @@
 'use strict';
 
-const { VENDORS, normalizeStreet } = require('./vendor-intake');
+const { VENDORS, compactStreet, normalizeStreet } = require('./vendor-intake');
 
 function normalize(value) {
   return String(value || '').trim().toLowerCase();
@@ -21,7 +21,10 @@ function inspectionServiceText(inspection) {
   return [
     attrs.service_names,
     attrs.service_add_on_names,
-    attrs.description
+    attrs.service_category_types,
+    attrs.description,
+    attrs.request_notes,
+    attrs.tooltip
   ].filter(Boolean).join(' | ');
 }
 
@@ -77,10 +80,17 @@ function sameVendor(left, right) {
 function sameAddress(left, right) {
   const a = normalizeStreet(left);
   const b = normalizeStreet(right);
+  const compactA = compactStreet(left);
+  const compactB = compactStreet(right);
   return Boolean(a && b && (
     a === b ||
     a.includes(b) ||
-    b.includes(a)
+    b.includes(a) ||
+    (compactA && compactB && (
+      compactA === compactB ||
+      compactA.includes(compactB) ||
+      compactB.includes(compactA)
+    ))
   ));
 }
 
