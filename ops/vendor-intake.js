@@ -542,12 +542,23 @@ async function spectoraJson(apiKey, path) {
 }
 
 async function searchSpectoraInspections(apiKey, address) {
-  const params = new URLSearchParams({
-    'filter[fulltext]': address,
-    'page[size]': '50',
-    sort: '-datetime'
-  });
-  return spectoraJson(apiKey, `/v2/inspections?${params.toString()}`);
+  const query = async fulltext => {
+    const params = new URLSearchParams({
+      'filter[fulltext]': fulltext,
+      'page[size]': '50',
+      sort: '-datetime'
+    });
+    return spectoraJson(apiKey, `/v2/inspections?${params.toString()}`);
+  };
+
+  const exact = await query(address);
+  if (Array.isArray(exact?.data) && exact.data.length) return exact;
+
+  const houseNumber = String(address || '').match(/^\s*(\d{1,6})\b/)?.[1] || '';
+  if (!houseNumber || houseNumber === String(address || '').trim()) return exact;
+
+  const fallback = await query(houseNumber);
+  return Array.isArray(fallback?.data) ? fallback : exact;
 }
 
 async function listSpectoraAttachments(apiKey, inspectionId) {
