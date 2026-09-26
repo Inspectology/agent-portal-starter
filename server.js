@@ -145,8 +145,12 @@ function createConfig(env = process.env) {
         .map(value => value.trim().toLowerCase())
         .filter(Boolean),
       securityEmail: String(env.ADMIN_SECURITY_EMAIL_TO || 'info@inspect-ology.com').trim().toLowerCase(),
-      from: String(env.ADMIN_AUTH_EMAIL_FROM || env.PROFILE_CHANGE_EMAIL_FROM || '').trim(),
-      resendApiKey: String(env.RESEND_API_KEY || '').trim(),
+      from: String(
+        env.ADMIN_AUTH_EMAIL_FROM ||
+        env.PROFILE_CHANGE_EMAIL_FROM ||
+        'IVY | Inspectology <ivy@inspect-ology.com>'
+      ).trim(),
+      resendApiKey: String(env.OPS_RESEND_API_KEY || env.RESEND_API_KEY || '').trim(),
       codeTtlSeconds: boundedInteger(env.ADMIN_CODE_TTL_SECONDS, 600, 300, 1800),
       sessionTtlSeconds: boundedInteger(env.ADMIN_SESSION_TTL_SECONDS, 43_200, 1800, 86_400),
       rateLimitMax: boundedInteger(env.ADMIN_AUTH_RATE_LIMIT_MAX, 5, 1, 20),
@@ -822,20 +826,23 @@ async function sendResendTextEmail({ apiKey, from, to, subject, text }) {
 
 async function sendAdminSignInCode(config, email, code) {
   const auth = config.adminAuth || {};
-  return sendResendTextEmail({
-    apiKey: auth.resendApiKey,
-    from: auth.from,
-    to: email,
-    subject: 'Your Inspectology Admin sign-in code',
-    text: [
-      'Use this code to sign in to the Inspectology Agent Dashboard admin console:',
-      '',
-      code,
-      '',
-      `This code expires in ${Math.round(auth.codeTtlSeconds / 60)} minutes.`,
-      'If you did not request this code, you can ignore this email.'
-    ].join('\n')
-  });
+  try {
+    await sendIvyEmail(config.operations, {
+      to: email,
+      subject: 'Your IVY sign-in code',
+      text: [
+        'Use this code to sign in to IVY:',
+        '',
+        code,
+        '',
+        `This code expires in ${Math.round(auth.codeTtlSeconds / 60)} minutes.`,
+        'If you did not request this code, you can ignore this email.'
+      ].join('\n')
+    });
+    return { sent: true };
+  } catch (error) {
+    return { sent: false, reason: 'provider_error' };
+  }
 }
 
 async function sendAdminSecurityNotice(config, email) {
