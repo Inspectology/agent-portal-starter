@@ -2098,9 +2098,7 @@ function createPortal(options = {}) {
   }
 
   async function ivyAttachmentsForPayables(inspections) {
-    const relevant = inspections.filter(inspection =>
-      expectedVendorsForInspection(inspection).length > 0
-    );
+    const relevant = inspections;
     const result = {};
 
     for (let index = 0; index < relevant.length; index += 8) {
