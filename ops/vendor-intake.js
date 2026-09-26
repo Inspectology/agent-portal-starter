@@ -3,7 +3,7 @@
 const STREET_SUFFIXES = [
   'alley','aly','avenue','ave','boulevard','blvd','circle','cir','court','ct',
   'drive','dr','highway','hwy','lane','ln','parkway','pkwy','place','pl',
-  'road','rd','street','st','terrace','ter','trail','trl','way'
+  'road','rd','run','street','st','terrace','ter','trail','trl','way'
 ];
 
 const VENDORS = Object.freeze([
@@ -14,7 +14,13 @@ const VENDORS = Object.freeze([
     emails: ['lynnpestmgmt@gmail.com'],
     domains: ['lynnpestmgmt.com'],
     servicePatterns: [/termite/i, /\bwdo\b/i, /wood[- ]destroy/i],
-    messagePatterns: [/lynn pest/i, /termite inspection/i, /\bwdo\b/i],
+    messagePatterns: [
+      /lynn pest/i,
+      /l\s*&?\s*j\s+lynn\s+llc/i,
+      /lj[_ -]?lynn[_ -]?llc/i,
+      /termite inspection/i,
+      /\bwdo\b/i
+    ],
     attachmentTypeEnv: 'OPS_ATTACHMENT_TYPE_TERMITE',
     documentedDefaultAttachmentType: 'pest_termite'
   },
@@ -79,7 +85,7 @@ function normalizeText(value) {
 }
 
 function normalizeStreet(value) {
-  return normalizeText(value)
+  let normalized = normalizeText(value)
     .replace(/\b(north|south|east|west)\b/g, match => ({
       north: 'n', south: 's', east: 'e', west: 'w'
     })[match])
@@ -98,6 +104,26 @@ function normalizeStreet(value) {
     .replace(/\b(trail)\b/g, 'trl')
     .replace(/\s+/g, ' ')
     .trim();
+
+  // Vendors sometimes place the directional after the suffix, e.g. "240 Main St E".
+  // Spectora commonly stores the same address as "240 E Main St".
+  const trailingDirection = normalized.match(
+    /^(\d{1,6})\s+(.+?)\s+(aly|ave|blvd|cir|ct|dr|hwy|ln|pkwy|pl|rd|run|st|ter|trl|way)\s+([nsew])$/
+  );
+  if (trailingDirection) {
+    normalized = [
+      trailingDirection[1],
+      trailingDirection[4],
+      trailingDirection[2],
+      trailingDirection[3]
+    ].join(' ');
+  }
+
+  return normalized;
+}
+
+function compactStreet(value) {
+  return normalizeStreet(value).replace(/\s+/g, '');
 }
 
 function sourceText(message = {}) {
@@ -240,7 +266,7 @@ function extractStreetCandidates(message = {}) {
 
   const suffix = STREET_SUFFIXES.join('|');
   const pattern = new RegExp(
-    `\\b(\\d{1,6}\\s+(?:[A-Za-z0-9.'-]+\\s+){0,7}(?:${suffix})\\b(?:\\s+(?:apt|unit|#)\\s*[A-Za-z0-9-]+)?)`,
+    `\\b(\\d{1,6}\\s+(?:[A-Za-z0-9.'-]+\\s+){0,7}(?:${suffix})\\b(?:\\s+(?:n|s|e|w|north|south|east|west))?(?:\\s+(?:apt|unit|#)\\s*[A-Za-z0-9-]+)?)`,
     'gi'
   );
 
@@ -296,10 +322,19 @@ function scoreInspection({ inspection, streetCandidates, vendor, receivedAt, zip
   let score = 0;
   const reasons = [];
 
-  const exactStreet = streetCandidates.some(candidate => candidate.normalized === street);
+  const compactInspectionStreet = compactStreet(street);
+  const exactStreet = streetCandidates.some(candidate =>
+    candidate.normalized === street ||
+    compactStreet(candidate.normalized) === compactInspectionStreet
+  );
   const containedStreet = streetCandidates.some(candidate =>
     candidate.normalized && street &&
-    (candidate.normalized.includes(street) || street.includes(candidate.normalized))
+    (
+      candidate.normalized.includes(street) ||
+      street.includes(candidate.normalized) ||
+      compactStreet(candidate.normalized).includes(compactInspectionStreet) ||
+      compactInspectionStreet.includes(compactStreet(candidate.normalized))
+    )
   );
 
   if (exactStreet) {
@@ -580,6 +615,7 @@ module.exports = {
   VENDORS,
   classifyDocument,
   classifyVendor,
+  compactStreet,
   createVendorIntakePlan,
   extractInvoiceData,
   duplicateAttachment,
