@@ -46,7 +46,31 @@ function sameAddress(left, right) {
   ));
 }
 
-function reportFor(activities, inspection, vendor) {
+function attachmentMatchesVendor(attachment, vendor) {
+  const attrs = attachment?.attributes || attachment || {};
+  const text = [
+    attrs.name,
+    attrs.file_file_name,
+    attrs.description,
+    attrs.attachment_type
+  ].filter(Boolean).join(' ');
+
+  if (vendor.key === 'termite') {
+    return attrs.attachment_type === 'pest_termite' || /termite|wdo|wood[- ]destroy|pest/i.test(text);
+  }
+  if (vendor.key === 'chimney') {
+    return /chimney|chim\s*insp|cambro/i.test(text);
+  }
+  if (vendor.key === 'well_water') {
+    return attrs.attachment_type === 'water' || /well\s*yield|water\s*(?:quality|test|testing|sample)|potability|atlantic\s*blue/i.test(text);
+  }
+  if (vendor.key === 'septic') {
+    return attrs.attachment_type === 'septic' || /septic|young\s*septic/i.test(text);
+  }
+  return false;
+}
+
+function reportFor(activities, inspection, vendor, attachmentsByInspection = {}) {
   const inspectionId = String(inspection?.id || '');
   const address = inspectionAddress(inspection);
 
@@ -55,9 +79,26 @@ function reportFor(activities, inspection, vendor) {
     sameVendor(item.vendor, vendor.company)
   );
 
-  return reports.find(item =>
+  const ledgerReport = reports.find(item =>
     inspectionId && String(item.spectoraInspectionId || '') === inspectionId
-  ) || reports.find(item => sameAddress(item.propertyAddress, address)) || null;
+  ) || reports.find(item => sameAddress(item.propertyAddress, address));
+
+  if (ledgerReport) return ledgerReport;
+
+  const attachments = attachmentsByInspection[inspectionId] || [];
+  const attachment = attachments.find(item => attachmentMatchesVendor(item, vendor));
+  if (!attachment) return null;
+
+  const attrs = attachment?.attributes || {};
+  return {
+    entryType: 'Report',
+    vendor: vendor.company,
+    propertyAddress: address,
+    spectoraInspectionId: inspectionId,
+    attachmentFilename: attrs.file_file_name || attrs.name || '',
+    status: 'Attached in Spectora',
+    receivedAt: attrs.created_at || ''
+  };
 }
 
 function invoiceKey(item) {
@@ -234,14 +275,20 @@ function rowStatus({ reportReceived, invoiceReceived, amount, priceConfidence })
   return 'Ready to Pay';
 }
 
-function buildVendorPayablesReport({ inspections = [], activities = [], start, end } = {}) {
+function buildVendorPayablesReport({
+  inspections = [],
+  activities = [],
+  attachmentsByInspection = {},
+  start,
+  end
+} = {}) {
   const usedInvoiceKeys = new Set();
   const rows = [];
 
   for (const inspection of inspections) {
     const vendors = expectedVendorsForInspection(inspection);
     for (const vendor of vendors) {
-      const report = reportFor(activities, inspection, vendor);
+      const report = reportFor(activities, inspection, vendor, attachmentsByInspection);
       let invoice = directInvoiceFor(activities, inspection, vendor, usedInvoiceKeys);
 
       if (!invoice && vendor.key === 'termite') {
@@ -318,6 +365,7 @@ function buildVendorPayablesReport({ inspections = [], activities = [], start, e
 }
 
 module.exports = {
+  attachmentMatchesVendor,
   buildVendorPayablesReport,
   expectedPrice,
   expectedVendorsForInspection,
