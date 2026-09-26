@@ -59,7 +59,17 @@ async function resendJson(apiKey, path) {
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const error = new Error('Resend API returned HTTP ' + response.status);
+    const providerMessage = String(
+      body?.message ||
+      body?.error?.message ||
+      body?.name ||
+      body?.error ||
+      ''
+    ).trim();
+    const error = new Error(
+      'Resend API returned HTTP ' + response.status +
+      (providerMessage ? ': ' + providerMessage : '')
+    );
     error.statusCode = response.status;
     error.body = body;
     throw error;
