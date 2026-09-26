@@ -1,0 +1,12 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/vendor-payables",
+      "schedule": "0 12 * * 1"
+    },
+    {
+      "path": "/api/cron/vendor-payables",
+      "schedule": "0 13 * * 1"
+    }
+  ]
+}
