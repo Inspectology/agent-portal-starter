@@ -9,6 +9,7 @@ const path = require('node:path');
 const {
   appendException,
   appendVendorActivity,
+  appendWeeklySummary,
   readRows
 } = require('./ops/google-sheets-ledger');
 const {
@@ -180,7 +181,8 @@ function createConfig(env = process.env) {
       autoUpload: String(env.OPS_AUTO_UPLOAD || 'false').trim().toLowerCase() === 'true',
       thankReports: String(env.OPS_THANK_REPORTS || 'true').trim().toLowerCase() === 'true',
       payablesEmailTo: String(env.OPS_PAYABLES_EMAIL_TO || 'info@inspect-ology.com').trim().toLowerCase(),
-      payablesAnchorMonday: String(env.OPS_PAYABLES_ANCHOR_MONDAY || '2026-09-28').trim()
+      payablesAnchorMonday: String(env.OPS_PAYABLES_ANCHOR_MONDAY || '2026-09-28').trim(),
+      cronSecret: String(env.CRON_SECRET || '').trim()
     },
     googleDrive: {
       projectNumber: String(env.GOOGLE_CLOUD_PROJECT_NUMBER || '').trim(),
@@ -2261,6 +2263,76 @@ function createPortal(options = {}) {
     return /vendor\s+payable|payables|vendor\s+payment|payroll\s+report|vendor\s+report/i.test(String(prompt || ''));
   }
 
+  function ivyNewYorkClock(now = new Date()) {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      weekday: 'short',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      hourCycle: 'h23'
+    }).formatToParts(now);
+    const get = type => parts.find(part => part.type === type)?.value || '';
+    return {
+      weekday: get('weekday'),
+      date: get('year') + '-' + get('month') + '-' + get('day'),
+      hour: Number(get('hour'))
+    };
+  }
+
+  function ivyPayablesMondayIsDue(dateOnly) {
+    const date = ivyPayablesDate(dateOnly);
+    const anchor = ivyPayablesDate(config.operations.payablesAnchorMonday);
+    if (!date || !anchor) return false;
+    const diff = Math.round(
+      (Date.parse(date + 'T12:00:00Z') - Date.parse(anchor + 'T12:00:00Z')) / 86_400_000
+    );
+    return diff >= 0 && diff % 14 === 0;
+  }
+
+  async function ivyPayablesAlreadySent(sheetsToken, periodEnd) {
+    const rows = await readRows(
+      sheetsToken,
+      config.operations.spreadsheetId,
+      "'Weekly Summary'!A2:H"
+    );
+    return rows.some(row =>
+      String(row[0] || '') === String(periodEnd || '') &&
+      /ivy payroll report sent/i.test(String(row[7] || ''))
+    );
+  }
+
+  async function ivyRecordPayablesRun(sheetsToken, report, recipient) {
+    const summary = report.groups.map(group => ({
+      vendor: group.vendor,
+      service: 'Vendor Payables',
+      inspectionCount: group.rows.length,
+      totalVendorCost: group.payableTotal,
+      missingReports: group.missingReports,
+      needsReview: group.needsReview,
+      notes:
+        'IVY payroll report sent to ' + recipient +
+        '. Missing invoices: ' + group.missingInvoices +
+        '. Pay period: ' + report.start + ' through ' + report.end + '.'
+    }));
+    await appendWeeklySummary(
+      sheetsToken,
+      config.operations,
+      report.end,
+      summary
+    );
+  }
+
+  function ivyCronAuthorized(req) {
+    const secret = String(config.operations.cronSecret || '');
+    if (!secret) return false;
+    const supplied = String(req.headers.authorization || '');
+    const expected = 'Bearer ' + secret;
+    if (supplied.length !== expected.length) return false;
+    return crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
+  }
+
   async function ivyRecentOperations(sheetsToken) {
     const activityRows = await readRows(
       sheetsToken,
@@ -2704,6 +2776,59 @@ function createPortal(options = {}) {
           status: 'ok',
           mode: config.operations.autoUpload ? 'auto-upload' : 'dry-run',
           result
+        });
+        status = 200;
+        return;
+      }
+
+      if (req.method === 'GET' && pathname === '/api/cron/vendor-payables') {
+        if (!ivyCronAuthorized(req)) {
+          sendJson(res, 401, { error: 'Unauthorized' });
+          status = 401;
+          return;
+        }
+
+        const clock = ivyNewYorkClock();
+        if (clock.weekday !== 'Mon' || clock.hour !== 8 || !ivyPayablesMondayIsDue(clock.date)) {
+          sendJson(res, 200, {
+            status: 'skipped',
+            reason: 'Not a scheduled IVY payroll Monday at 8 AM Eastern',
+            localDate: clock.date,
+            localHour: clock.hour
+          });
+          status = 200;
+          return;
+        }
+
+        const periodEnd = ivyPayablesDateAdd(clock.date, -1);
+        const periodStart = ivyPayablesDateAdd(clock.date, -14);
+        const token = await googleSheetsAccessToken(
+          config,
+          String(req.headers['x-vercel-oidc-token'] || '')
+        );
+
+        if (await ivyPayablesAlreadySent(token, periodEnd)) {
+          sendJson(res, 200, {
+            status: 'skipped',
+            reason: 'IVY vendor payables report was already sent for this pay period',
+            periodStart,
+            periodEnd
+          });
+          status = 200;
+          return;
+        }
+
+        const report = await ivyBuildPayables(token, periodStart, periodEnd);
+        const recipient = config.operations.payablesEmailTo;
+        await ivyEmailPayables(report, recipient);
+        await ivyRecordPayablesRun(token, report, recipient);
+
+        sendJson(res, 200, {
+          status: 'sent',
+          sentTo: recipient,
+          periodStart,
+          periodEnd,
+          knownPayableTotal: report.payableTotal
         });
         status = 200;
         return;
