@@ -2944,6 +2944,22 @@ function createPortal(options = {}) {
           return;
         }
 
+        if (req.method === 'GET' && pathname === '/api/admin/ops/resend-key-diagnostic') {
+          const key = String(config.operations.resendApiKey || '');
+          const fingerprint = key
+            ? crypto.createHash('sha256').update(key).digest('hex').slice(0, 12)
+            : '';
+          sendJson(res, 200, {
+            status: 'ok',
+            configured: Boolean(key),
+            startsWithRe: key.startsWith('re_'),
+            length: key.length,
+            fingerprint
+          });
+          status = 200;
+          return;
+        }
+
         if (req.method === 'GET' && pathname === '/api/admin/ops/status') {
           sendJson(res, 200, {
             status: 'ok',
