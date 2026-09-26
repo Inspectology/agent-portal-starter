@@ -32,6 +32,44 @@ function expectedVendorsForInspection(inspection) {
   );
 }
 
+function vendorsSupportedByActivity(inspection, activities = []) {
+  const address = inspectionAddress(inspection);
+  if (!address) return [];
+
+  return VENDORS.filter(vendor =>
+    activities.some(item =>
+      sameVendor(item.vendor, vendor.company) &&
+      ['report', 'invoice'].includes(normalize(item.entryType)) &&
+      sameAddress(item.propertyAddress || item.notes, address)
+    )
+  );
+}
+
+function vendorsSupportedByAttachments(inspection, attachmentsByInspection = {}) {
+  const inspectionId = String(inspection?.id || '');
+  const attachments = attachmentsByInspection[inspectionId] || [];
+  if (!attachments.length) return [];
+  return VENDORS.filter(vendor =>
+    attachments.some(item => attachmentMatchesVendor(item, vendor))
+  );
+}
+
+function reconciledVendorsForInspection(
+  inspection,
+  activities = [],
+  attachmentsByInspection = {}
+) {
+  const byKey = new Map();
+  for (const vendor of [
+    ...expectedVendorsForInspection(inspection),
+    ...vendorsSupportedByActivity(inspection, activities),
+    ...vendorsSupportedByAttachments(inspection, attachmentsByInspection)
+  ]) {
+    byKey.set(vendor.key, vendor);
+  }
+  return [...byKey.values()];
+}
+
 function sameVendor(left, right) {
   return normalize(left) === normalize(right);
 }
@@ -287,7 +325,11 @@ function buildVendorPayablesReport({
   const rows = [];
 
   for (const inspection of inspections) {
-    const vendors = expectedVendorsForInspection(inspection);
+    const vendors = reconciledVendorsForInspection(
+      inspection,
+      activities,
+      attachmentsByInspection
+    );
     for (const vendor of vendors) {
       const report = reportFor(activities, inspection, vendor, attachmentsByInspection);
       let invoices = directInvoicesFor(activities, inspection, vendor, usedInvoiceKeys);
@@ -390,6 +432,7 @@ module.exports = {
   buildVendorPayablesReport,
   expectedPrice,
   expectedVendorsForInspection,
+  reconciledVendorsForInspection,
   inspectionAddress,
   inspectionDate,
   inspectionServiceText,
