@@ -16,6 +16,7 @@ const commandForm = document.getElementById('commandForm');
 const commandInput = document.getElementById('commandInput');
 const conversation = document.getElementById('conversation');
 const activityList = document.getElementById('activityList');
+const activityToggle = document.getElementById('activityToggle');
 const exceptionsList = document.getElementById('exceptionsList');
 const exceptionCount = document.getElementById('exceptionCount');
 const voiceButton = document.getElementById('voiceButton');
@@ -25,6 +26,9 @@ const installButton = document.getElementById('installButton');
 let pendingChallenge = sessionStorage.getItem('ivyAdminChallenge') || '';
 let pendingEmail = sessionStorage.getItem('ivyAdminEmail') || '';
 let installPrompt = null;
+let latestActivity = [];
+let activityExpanded = false;
+const ACTIVITY_PREVIEW_COUNT = 5;
 
 function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
@@ -79,30 +83,47 @@ function formatWhen(value) {
   return date.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
+function renderActivityList() {
+  activityList.replaceChildren();
+
+  if (!latestActivity.length) {
+    activityList.append(el('div', { class: 'ivy-empty', text: 'No vendor activity yet.' }));
+    activityToggle.hidden = true;
+    return;
+  }
+
+  const visible = activityExpanded
+    ? latestActivity
+    : latestActivity.slice(0, ACTIVITY_PREVIEW_COUNT);
+
+  for (const item of visible) {
+    activityList.append(
+      el('article', { class: 'ivy-card' }, [
+        el('div', { class: 'ivy-card-top' }, [
+          el('strong', { text: item.vendor || item.entryType || 'Vendor activity' }),
+          el('span', { class: 'ivy-status', text: item.status || item.entryType || '' })
+        ]),
+        el('p', { text: [item.propertyAddress, item.service].filter(Boolean).join(' · ') }),
+        el('p', { text: [formatWhen(item.receivedAt), item.attachmentFilename].filter(Boolean).join(' · ') })
+      ])
+    );
+  }
+
+  const hiddenCount = Math.max(0, latestActivity.length - ACTIVITY_PREVIEW_COUNT);
+  activityToggle.hidden = hiddenCount === 0;
+  activityToggle.textContent = activityExpanded
+    ? 'Show less'
+    : 'Show more (' + hiddenCount + ')';
+  activityToggle.setAttribute('aria-expanded', String(activityExpanded));
+}
+
 function renderActivity(body) {
-  const activity = Array.isArray(body.activity) ? body.activity : [];
+  latestActivity = Array.isArray(body.activity) ? body.activity : [];
   const exceptions = Array.isArray(body.exceptions) ? body.exceptions : [];
 
-  activityList.replaceChildren();
+  renderActivityList();
   exceptionsList.replaceChildren();
   exceptionCount.textContent = String(exceptions.length);
-
-  if (!activity.length) {
-    activityList.append(el('div', { class: 'ivy-empty', text: 'No vendor activity yet.' }));
-  } else {
-    for (const item of activity) {
-      activityList.append(
-        el('article', { class: 'ivy-card' }, [
-          el('div', { class: 'ivy-card-top' }, [
-            el('strong', { text: item.vendor || item.entryType || 'Vendor activity' }),
-            el('span', { class: 'ivy-status', text: item.status || item.entryType || '' })
-          ]),
-          el('p', { text: [item.propertyAddress, item.service].filter(Boolean).join(' · ') }),
-          el('p', { text: [formatWhen(item.receivedAt), item.attachmentFilename].filter(Boolean).join(' · ') })
-        ])
-      );
-    }
-  }
 
   if (!exceptions.length) {
     exceptionsList.append(el('div', { class: 'ivy-empty', text: 'Nothing needs attention.' }));
@@ -201,6 +222,11 @@ refreshButton.addEventListener('click', async () => {
   refreshButton.disabled = true;
   try { await loadActivity(); }
   finally { refreshButton.disabled = false; }
+});
+
+activityToggle.addEventListener('click', () => {
+  activityExpanded = !activityExpanded;
+  renderActivityList();
 });
 
 commandForm.addEventListener('submit', async event => {
