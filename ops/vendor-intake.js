@@ -194,6 +194,16 @@ function classifyDocument(message = {}, vendor = null) {
     return { type: 'review', reason: 'Video attachment requires separate handling' };
   }
 
+  const hasPdf = filenames.some(name => /\.pdf$/i.test(name));
+  if (!hasPdf) {
+    return {
+      type: 'ignore',
+      reason: filenames.length
+        ? 'Vendor email contains no PDF report attachment'
+        : 'Vendor email contains no report attachment'
+    };
+  }
+
   if (vendor?.key === 'termite' && filenames.some(name => /\.pdf$/i.test(name))) {
     return { type: 'report', reason: 'Lynn Pest termite report PDF', displayName: 'Termite Report' };
   }
