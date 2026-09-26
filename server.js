@@ -34,7 +34,10 @@ const {
   verifyResendWebhook
 } = require('./ops/resend-inbound');
 const { sendIvyEmail } = require('./ops/ivy-email');
-const { buildVendorPayablesReport } = require('./ops/vendor-payables');
+const {
+  buildVendorPayablesReport,
+  expectedVendorsForInspection
+} = require('./ops/vendor-payables');
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -2094,14 +2097,47 @@ function createPortal(options = {}) {
     })).filter(item => item.receivedAt || item.vendor || item.status);
   }
 
+  async function ivyAttachmentsForPayables(inspections) {
+    const relevant = inspections.filter(inspection =>
+      expectedVendorsForInspection(inspection).length > 0
+    );
+    const result = {};
+
+    for (let index = 0; index < relevant.length; index += 8) {
+      const batch = relevant.slice(index, index + 8);
+      const fetched = await Promise.all(batch.map(async inspection => {
+        const response = await fetchUpstream(
+          'Vendor payables attachment lookup',
+          query('/v2/inspection_attachments', {
+            'filter[inspection_id]': String(inspection.id || ''),
+            'filter[report]': 'true',
+            'page[size]': '200',
+            sort: '-created_at'
+          })
+        );
+        return [
+          String(inspection.id || ''),
+          Array.isArray(response?.data) ? response.data : []
+        ];
+      }));
+      for (const [inspectionId, attachments] of fetched) {
+        result[inspectionId] = attachments;
+      }
+    }
+
+    return result;
+  }
+
   async function ivyBuildPayables(sheetsToken, start, end) {
     const [inspections, activity] = await Promise.all([
       ivySpectoraInspectionsForRange(start, end),
       ivyAllVendorActivity(sheetsToken)
     ]);
+    const attachmentsByInspection = await ivyAttachmentsForPayables(inspections);
     return buildVendorPayablesReport({
       inspections,
       activities: activity,
+      attachmentsByInspection,
       start,
       end
     });
