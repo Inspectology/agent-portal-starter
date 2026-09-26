@@ -194,6 +194,18 @@ h2 { font-size: 21px; margin: 3px 0 0; }
 }
 .ivy-empty { color: var(--muted); padding: 15px 4px; }
 
+.ivy-show-more {
+  width: 100%;
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--soft);
+  color: var(--ink);
+  font-weight: 800;
+  padding: 12px 14px;
+}
+.ivy-show-more:active { background: #e9e9e9; }
+
 .ivy-footer {
   display: flex;
   justify-content: space-between;
