@@ -10,9 +10,11 @@ const {
   appendException,
   appendVendorActivity,
   appendWeeklySummary,
-  readRows
+  readRows,
+  updateExceptionStatus
 } = require('./ops/google-sheets-ledger');
 const {
+  VENDORS,
   classifyDocument,
   classifyVendor,
   duplicateAttachment,
@@ -2466,16 +2468,11 @@ function createPortal(options = {}) {
     return { activity, exceptions };
   }
 
-  async function ivyExistingKeys(sheetsToken) {
+  async function ivyExistingKeys(sheetsToken, options = {}) {
     const activityRows = await readRows(
       sheetsToken,
       config.operations.spreadsheetId,
       "'Vendor Activity'!A2:O"
-    );
-    const exceptionRows = await readRows(
-      sheetsToken,
-      config.operations.spreadsheetId,
-      "'Exceptions'!A2:J"
     );
 
     const keys = new Set();
@@ -2484,11 +2481,20 @@ function createPortal(options = {}) {
       const filename = String(row[8] || '');
       if (sourceEmailId) keys.add(ivyLedgerKey(sourceEmailId, filename));
     }
-    for (const row of exceptionRows) {
-      const sourceEmailId = String(row[4] || '');
-      const filename = String(row[5] || '');
-      if (sourceEmailId) keys.add(ivyLedgerKey(sourceEmailId, filename));
+
+    if (options.includeExceptions !== false) {
+      const exceptionRows = await readRows(
+        sheetsToken,
+        config.operations.spreadsheetId,
+        "'Exceptions'!A2:J"
+      );
+      for (const row of exceptionRows) {
+        const sourceEmailId = String(row[4] || '');
+        const filename = String(row[5] || '');
+        if (sourceEmailId) keys.add(ivyLedgerKey(sourceEmailId, filename));
+      }
     }
+
     return keys;
   }
 
@@ -2517,7 +2523,7 @@ function createPortal(options = {}) {
     });
   }
 
-  async function processIvyReceivedEmail(req, event) {
+  async function processIvyReceivedEmail(req, event, overrides = {}) {
     const emailId = String(event?.data?.email_id || '').trim();
     if (!emailId) throw authError('Resend received email ID is missing', 400);
     if (!config.operations.resendApiKey) {
@@ -2529,13 +2535,25 @@ function createPortal(options = {}) {
       listReceivedAttachments(config.operations.resendApiKey, emailId)
     ]);
     const message = receivedEmailToMessage(event, email, attachments);
+    if (overrides.propertyAddress) {
+      const correctionAddress = String(overrides.propertyAddress || '').trim();
+      message.body = [correctionAddress, message.body].filter(Boolean).join('\n');
+    }
+
     const sheetsToken = await googleSheetsAccessToken(
       config,
       String(req.headers['x-vercel-oidc-token'] || '')
     );
-    const existingKeys = await ivyExistingKeys(sheetsToken);
+    const existingKeys = await ivyExistingKeys(sheetsToken, {
+      includeExceptions: overrides.includeExceptions !== false
+    });
 
-    const classified = classifyVendor(message);
+    const forcedVendor = overrides.vendorKey
+      ? VENDORS.find(item => item.key === String(overrides.vendorKey))
+      : null;
+    const classified = forcedVendor
+      ? { vendor: forcedVendor, confidence: 1, ambiguous: false, candidates: [] }
+      : classifyVendor(message);
     const defaultFilename = message.filenames?.[0] || '';
     const defaultKey = ivyLedgerKey(message.sourceEmailId, defaultFilename);
 
@@ -2605,7 +2623,7 @@ function createPortal(options = {}) {
       return { action: 'review', vendor: vendor.company, reason: document.reason };
     }
 
-    if (!ivyHasProcessedEmail(existingKeys, message.sourceEmailId)) {
+    if (!overrides.skipThanks && !ivyHasProcessedEmail(existingKeys, message.sourceEmailId)) {
       try {
         await ivySendReportThanks(message);
       } catch (error) {
@@ -2802,6 +2820,74 @@ function createPortal(options = {}) {
       propertyAddress: inspectionAddress(inspection) || streets[0].raw,
       results
     };
+  }
+
+  function ivyExceptionResolutionLabel(result = {}) {
+    if (result.action === 'processed') return 'Processed and uploaded by IVY.';
+    if (result.action === 'dry_run') return 'Retried successfully and matched in Dry Run.';
+    if (result.action === 'ledger') return 'Retried successfully and added to Vendor Activity.';
+    if (result.action === 'skip') return 'Retried successfully; matching file was already present.';
+    if (result.action === 'ignore') return 'Retried successfully; item was intentionally ignored.';
+    return '';
+  }
+
+  async function ivyRetryException(req, body) {
+    const sourceEmailId = String(body.sourceEmailId || '').trim();
+    const attachmentFilename = String(body.attachmentFilename || '').trim();
+    const vendorKey = String(body.vendorKey || '').trim();
+    const propertyAddress = String(body.propertyAddress || '').trim();
+
+    if (!sourceEmailId) throw authError('Source email ID is required', 400);
+    if (vendorKey && !VENDORS.some(item => item.key === vendorKey)) {
+      throw authError('Choose a valid vendor', 400);
+    }
+
+    const result = await processIvyReceivedEmail(
+      req,
+      { type: 'email.received', data: { email_id: sourceEmailId } },
+      {
+        vendorKey,
+        propertyAddress,
+        skipThanks: true,
+        includeExceptions: false
+      }
+    );
+
+    const sheetsToken = await googleSheetsAccessToken(
+      config,
+      String(req.headers['x-vercel-oidc-token'] || '')
+    );
+
+    const successNote = ivyExceptionResolutionLabel(result);
+    if (successNote) {
+      await updateExceptionStatus(
+        sheetsToken,
+        config.operations.spreadsheetId,
+        {
+          sourceEmailId,
+          attachmentFilename,
+          status: 'Resolved',
+          resolutionNotes: [
+            successNote,
+            vendorKey ? 'Vendor override: ' + vendorKey + '.' : '',
+            propertyAddress ? 'Property correction: ' + propertyAddress + '.' : ''
+          ].filter(Boolean).join(' ')
+        }
+      );
+    } else {
+      await updateExceptionStatus(
+        sheetsToken,
+        config.operations.spreadsheetId,
+        {
+          sourceEmailId,
+          attachmentFilename,
+          status: 'Open',
+          resolutionNotes: 'Retry still needs review: ' + String(result.reason || result.action || 'Unknown reason')
+        }
+      );
+    }
+
+    return result;
   }
 
   async function handleRequest(req, res) {
@@ -3404,6 +3490,50 @@ function createPortal(options = {}) {
             sentTo: body.to || config.operations.payablesEmailTo,
             report
           });
+          status = 200;
+          return;
+        }
+
+        if (req.method === 'POST' && pathname === '/api/admin/ivy/exceptions/retry') {
+          const body = await readJsonBody(req, 16_000);
+          const result = await ivyRetryException(req, body);
+          sendJson(res, 200, { status: 'ok', result });
+          status = 200;
+          return;
+        }
+
+        if (req.method === 'POST' && pathname === '/api/admin/ivy/exceptions/resolve') {
+          const body = await readJsonBody(req, 12_000);
+          const sourceEmailId = String(body.sourceEmailId || '').trim();
+          const attachmentFilename = String(body.attachmentFilename || '').trim();
+          const note = String(body.note || 'Manually resolved in IVY.').trim().slice(0, 1000);
+          if (!sourceEmailId) {
+            sendJson(res, 400, { error: 'Source email ID is required' });
+            status = 400;
+            return;
+          }
+
+          const token = await googleSheetsAccessToken(
+            config,
+            String(req.headers['x-vercel-oidc-token'] || '')
+          );
+          const updated = await updateExceptionStatus(
+            token,
+            config.operations.spreadsheetId,
+            {
+              sourceEmailId,
+              attachmentFilename,
+              status: 'Resolved',
+              resolutionNotes: note
+            }
+          );
+          if (!updated.updated) {
+            sendJson(res, 404, { error: 'Exception not found' });
+            status = 404;
+            return;
+          }
+
+          sendJson(res, 200, { status: 'ok' });
           status = 200;
           return;
         }
