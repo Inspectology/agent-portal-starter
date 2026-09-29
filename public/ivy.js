@@ -216,6 +216,84 @@ function renderActivity(body) {
         }
       });
 
+      const sourcePanel = el('div', { class: 'ivy-source-panel' });
+      sourcePanel.hidden = true;
+      let sourceLoaded = false;
+
+      const sourceButton = el('button', {
+        class: 'ivy-source-button',
+        type: 'button',
+        text: 'View source email',
+        'aria-expanded': 'false'
+      });
+
+      sourceButton.addEventListener('click', async () => {
+        const expanded = sourceButton.getAttribute('aria-expanded') === 'true';
+        if (expanded) {
+          sourceButton.setAttribute('aria-expanded', 'false');
+          sourceButton.textContent = 'View source email';
+          sourcePanel.hidden = true;
+          return;
+        }
+
+        sourceButton.setAttribute('aria-expanded', 'true');
+        sourceButton.textContent = 'Hide source email';
+        sourcePanel.hidden = false;
+
+        if (sourceLoaded) return;
+        sourcePanel.replaceChildren(el('p', { class: 'ivy-muted', text: 'Loading original email...' }));
+
+        try {
+          const body = await api('/api/admin/ivy/exceptions/source', {
+            method: 'POST',
+            body: JSON.stringify({ sourceEmailId: item.sourceEmailId })
+          });
+          const source = body.source || {};
+          const attachments = Array.isArray(source.attachments) ? source.attachments : [];
+
+          const attachmentList = el('div', { class: 'ivy-source-attachments' });
+          if (!attachments.length) {
+            attachmentList.append(el('p', { class: 'ivy-muted', text: 'No attachments on this email.' }));
+          } else {
+            for (const attachment of attachments) {
+              const href = '/api/admin/ivy/exceptions/attachment?' +
+                'emailId=' + encodeURIComponent(item.sourceEmailId) +
+                '&attachmentId=' + encodeURIComponent(attachment.id || '');
+              attachmentList.append(
+                el('a', {
+                  class: 'ivy-source-attachment',
+                  href,
+                  target: '_blank',
+                  rel: 'noopener',
+                  text: attachment.filename || 'Open attachment'
+                })
+              );
+            }
+          }
+
+          sourcePanel.replaceChildren(
+            el('div', { class: 'ivy-source-meta' }, [
+              el('p', { text: 'From: ' + (source.from || 'Unknown sender') }),
+              el('p', { text: 'Subject: ' + (source.subject || '(no subject)') }),
+              source.createdAt ? el('p', { text: 'Received: ' + formatWhen(source.createdAt) }) : null
+            ].filter(Boolean)),
+            el('div', { class: 'ivy-source-message' }, [
+              el('span', { class: 'ivy-review-label', text: 'Original message' }),
+              el('pre', { class: 'ivy-source-body', text: source.text || 'No plain-text email body was available.' })
+            ]),
+            el('div', { class: 'ivy-source-message' }, [
+              el('span', { class: 'ivy-review-label', text: 'Attachments' }),
+              attachmentList
+            ])
+          );
+          sourceLoaded = true;
+        } catch (error) {
+          sourcePanel.replaceChildren(
+            el('p', { class: 'ivy-review-message', text: 'Could not load source: ' + error.message })
+          );
+        }
+      });
+
       const correctionForm = el('div', { class: 'ivy-review-form' }, [
         el('label', { class: 'ivy-review-label' }, [
           el('span', { text: 'Vendor correction' }),
@@ -245,6 +323,8 @@ function renderActivity(body) {
         item.resolutionNotes
           ? el('p', { text: 'Review note: ' + item.resolutionNotes })
           : null,
+        item.sourceEmailId ? sourceButton : null,
+        item.sourceEmailId ? sourcePanel : null,
         correctionForm,
         item.sourceEmailId
           ? el('p', { class: 'ivy-technical', text: 'Email ID: ' + item.sourceEmailId })
