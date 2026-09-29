@@ -101,7 +101,7 @@ function renderActivityList() {
       el('article', { class: 'ivy-card' }, [
         el('div', { class: 'ivy-card-top' }, [
           el('strong', { text: item.vendor || item.entryType || 'Vendor activity' }),
-          el('span', { class: 'ivy-status', text: item.status || item.entryType || '' })
+          el('span', { class: 'ivy-status', text: 'Status: ' + (item.status || item.entryType || ''), title: 'Status only' })
         ]),
         el('p', { text: [item.propertyAddress, item.service].filter(Boolean).join(' · ') }),
         el('p', { text: [formatWhen(item.receivedAt), item.attachmentFilename].filter(Boolean).join(' · ') })
@@ -129,14 +129,50 @@ function renderActivity(body) {
     exceptionsList.append(el('div', { class: 'ivy-empty', text: 'Nothing needs attention.' }));
   } else {
     for (const item of exceptions) {
+      const details = el('div', { class: 'ivy-exception-details' }, [
+        item.propertyAddress
+          ? el('p', { text: 'Property: ' + item.propertyAddress })
+          : null,
+        item.attachmentFilename
+          ? el('p', { text: 'Source file: ' + item.attachmentFilename })
+          : null,
+        item.candidateInspections
+          ? el('p', { text: 'Candidate matches: ' + item.candidateInspections })
+          : null,
+        item.sourceEmailId
+          ? el('p', { class: 'ivy-technical', text: 'Email ID: ' + item.sourceEmailId })
+          : null
+      ].filter(Boolean));
+      details.hidden = true;
+
+      const detailsButton = el('button', {
+        class: 'ivy-details-button',
+        type: 'button',
+        text: 'View details',
+        'aria-expanded': 'false'
+      });
+
+      detailsButton.addEventListener('click', () => {
+        const expanded = detailsButton.getAttribute('aria-expanded') === 'true';
+        detailsButton.setAttribute('aria-expanded', String(!expanded));
+        detailsButton.textContent = expanded ? 'View details' : 'Hide details';
+        details.hidden = expanded;
+      });
+
       exceptionsList.append(
         el('article', { class: 'ivy-card' }, [
           el('div', { class: 'ivy-card-top' }, [
             el('strong', { text: item.vendor || 'IVY exception' }),
-            el('span', { class: 'ivy-status', text: item.status || 'Open' })
+            el('span', {
+              class: 'ivy-status',
+              text: 'Status: ' + (item.status || 'Open'),
+              title: 'Status only'
+            })
           ]),
           el('p', { text: item.reason || 'Review needed' }),
-          el('p', { text: [item.propertyAddress, formatWhen(item.createdAt)].filter(Boolean).join(' · ') })
+          el('p', { text: [item.propertyAddress, formatWhen(item.createdAt)].filter(Boolean).join(' · ') }),
+          detailsButton,
+          details
         ])
       );
     }
