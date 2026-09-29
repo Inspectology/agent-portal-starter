@@ -1,11 +1,11 @@
 'use strict';
 
-const CACHE_NAME = 'inspectology-agent-v39';
+const CACHE_NAME = 'inspectology-agent-v40';
 const STATIC_ASSETS = [
   '/',
-  '/styles.css',
-  '/app.js',
-  '/mode-copy.js',
+  '/styles.css?v=40',
+  '/app.js?v=40',
+  '/mode-copy.js?v=40',
   '/manifest.webmanifest',
   '/assets/inspectology-app.svg',
   '/assets/mock-agent.svg'
