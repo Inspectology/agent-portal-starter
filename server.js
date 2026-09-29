@@ -183,7 +183,7 @@ function createConfig(env = process.env) {
       resendWebhookSecret: String(env.OPS_RESEND_WEBHOOK_SECRET || '').trim(),
       autoUpload: String(env.OPS_AUTO_UPLOAD || 'false').trim().toLowerCase() === 'true',
       thankReports: String(env.OPS_THANK_REPORTS || 'true').trim().toLowerCase() === 'true',
-      payablesEmailTo: String(env.OPS_PAYABLES_EMAIL_TO || 'jvandenelzen@inspect-ology.com').trim().toLowerCase(),
+      payablesEmailTo: String(env.OPS_PAYABLES_EMAIL_TO || 'info@inspect-ology.com').trim().toLowerCase(),
       payablesAnchorMonday: String(env.OPS_PAYABLES_ANCHOR_MONDAY || '2026-09-28').trim(),
       cronSecret: String(env.CRON_SECRET || '').trim()
     },
