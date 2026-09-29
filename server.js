@@ -2508,6 +2508,7 @@ function createPortal(options = {}) {
         notes: String(row[14] || '')
       }))
       .filter(item => item.receivedAt || item.vendor || item.status)
+      .filter(item => String(item.entryType || '').toLowerCase() !== 'ignored')
       .reverse();
 
     const exceptions = exceptionRows
@@ -2610,14 +2611,38 @@ function createPortal(options = {}) {
       includeExceptions: overrides.includeExceptions !== false
     });
 
+    const defaultFilename = message.filenames?.[0] || '';
+    const defaultKey = ivyLedgerKey(message.sourceEmailId, defaultFilename);
+    const isAtlanticBlueYieldDisclaimer = (message.filenames || []).some(name =>
+      /^well yield disclaimer\.pdf$/i.test(String(name || '').trim())
+    );
+
+    if (isAtlanticBlueYieldDisclaimer) {
+      if (!existingKeys.has(defaultKey)) {
+        await appendVendorActivity(sheetsToken, config.operations, {
+          receivedAt: message.receivedAt,
+          entryType: 'Ignored',
+          vendor: 'Atlantic Blue',
+          service: 'Well / Water Testing',
+          sourceEmailId: message.sourceEmailId,
+          attachmentFilename: defaultFilename,
+          status: 'Ignored',
+          notes: 'Automatic Atlantic Blue well-yield disclaimer. No action required.'
+        });
+      }
+      return {
+        action: 'ignore',
+        vendor: 'Atlantic Blue',
+        reason: 'Automatic Atlantic Blue well-yield disclaimer'
+      };
+    }
+
     const forcedVendor = overrides.vendorKey
       ? VENDORS.find(item => item.key === String(overrides.vendorKey))
       : null;
     const classified = forcedVendor
       ? { vendor: forcedVendor, confidence: 1, ambiguous: false, candidates: [] }
       : classifyVendor(message);
-    const defaultFilename = message.filenames?.[0] || '';
-    const defaultKey = ivyLedgerKey(message.sourceEmailId, defaultFilename);
 
     if (!classified.vendor) {
       if (!existingKeys.has(defaultKey)) {
