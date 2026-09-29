@@ -211,6 +211,50 @@ h2 { font-size: 21px; margin: 3px 0 0; }
   background: var(--soft);
 }
 .ivy-exception-details p { margin-top: 0; }
+
+.ivy-review-form {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.ivy-review-label {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--ink);
+}
+.ivy-review-input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  color: var(--ink);
+  padding: 11px 12px;
+  font: inherit;
+}
+.ivy-review-input:focus {
+  outline: none;
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px rgba(169,5,51,.1);
+}
+.ivy-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+.ivy-review-action {
+  width: auto;
+  padding: 10px 12px;
+}
+.ivy-review-message {
+  min-height: 18px;
+  margin: 0 !important;
+  font-size: 12px !important;
+}
 .ivy-technical {
   font-size: 12px !important;
   overflow-wrap: anywhere;
