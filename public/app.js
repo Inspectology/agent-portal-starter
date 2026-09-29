@@ -144,31 +144,18 @@ function getProfileOverrides() {
   }
 }
 
-function photoKey() {
-  return `agentPhoto:${getConnectionId()}`;
-}
-
-function getSavedPhoto() {
-  try {
-    return localStorage.getItem(photoKey()) || '';
-  } catch {
-    return '';
-  }
-}
-
 function mergedAgent(agent) {
-  const savedPhoto = getSavedPhoto();
   return {
     ...agent,
-    ...getProfileOverrides(),
-    photoUrl: savedPhoto || agent.photoUrl
+    ...getProfileOverrides()
   };
 }
 
 function resizeProfilePhoto(file, size = 360) {
   return new Promise((resolve, reject) => {
-    if (!file || !/^image\//i.test(file.type || '')) {
-      reject(new Error('Please choose an image file.'));
+    const supportedTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+    if (!file || !supportedTypes.has(String(file.type || '').toLowerCase())) {
+      reject(new Error('Use a JPG, PNG, WebP, or GIF photo.'));
       return;
     }
     if (file.size > 8_000_000) {
@@ -204,7 +191,10 @@ function resizeProfilePhoto(file, size = 360) {
 }
 
 function renderProfilePhotoControl(agent) {
-  const hasCustomPhoto = Boolean(getSavedPhoto());
+  const hasCustomPhoto = Boolean(
+    agent.photoUrl &&
+    !String(agent.photoUrl).includes('/assets/mock-agent.svg')
+  );
   const input = el('input', {
     class: 'profile-photo-input',
     type: 'file',
@@ -227,12 +217,24 @@ function renderProfilePhotoControl(agent) {
 
     try {
       const photo = await resizeProfilePhoto(file);
-      localStorage.setItem(photoKey(), photo);
+      status.textContent = 'Saving photo…';
+
+      const result = await portalApi(
+        `/api/agent/${encodeURIComponent(getConnectionId())}/profile-photo`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ imageData: photo })
+        }
+      );
+
+      const photoUrl = String(result.photoUrl || '');
+      if (!photoUrl) throw new Error('The photo was saved, but the updated image is not available yet.');
+
       currentData = {
         ...currentData,
         agent: {
           ...currentData.agent,
-          photoUrl: photo
+          photoUrl
         }
       };
       renderDashboard(currentData);
