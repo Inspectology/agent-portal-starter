@@ -2383,7 +2383,7 @@ function createPortal(options = {}) {
 
   function ivyVendorKeyFromPrompt(prompt) {
     const text = String(prompt || '');
-    if (/\b(cambro|chimney)\b/i.test(text)) return 'chimney';
+    if (/\b(cambro(?:['’]?s)?|chimney)\b/i.test(text)) return 'chimney';
     if (/\b(lynn\s*pest|lynn|termite|wdo)\b/i.test(text)) return 'termite';
     if (/\b(atlantic\s*blue|well\s*yield|water\s*(?:quality|test|testing))\b/i.test(text)) return 'well_water';
     if (/\b(young\s*septic|septic)\b/i.test(text)) return 'septic';
