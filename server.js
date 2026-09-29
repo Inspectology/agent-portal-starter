@@ -2263,8 +2263,44 @@ function createPortal(options = {}) {
     return months[key] || '';
   }
 
+  function ivyMostRecentCompletedPayPeriod(now = new Date()) {
+    const clock = ivyNewYorkClock(now);
+    const today = ivyPayablesDate(clock.date);
+    const anchor = ivyPayablesDate(config.operations.payablesAnchorMonday);
+    if (!today || !anchor) return null;
+
+    let reportMonday = anchor;
+    if (today >= anchor) {
+      const diffDays = Math.floor(
+        (Date.parse(today + 'T12:00:00Z') - Date.parse(anchor + 'T12:00:00Z')) / 86_400_000
+      );
+      const cycles = Math.floor(diffDays / 14);
+      reportMonday = ivyPayablesDateAdd(anchor, cycles * 14);
+
+      if (reportMonday > today) {
+        reportMonday = ivyPayablesDateAdd(reportMonday, -14);
+      }
+    } else {
+      return null;
+    }
+
+    return {
+      start: ivyPayablesDateAdd(reportMonday, -14),
+      end: ivyPayablesDateAdd(reportMonday, -1)
+    };
+  }
+
   function ivyPayablesRangeFromPrompt(prompt) {
     const text = String(prompt || '');
+
+    if (
+      /\b(last|previous|prior)\s+(?:2|two)\s+weeks?\b/i.test(text) ||
+      /\blast\s+pay\s*period\b/i.test(text) ||
+      /\bprevious\s+pay\s*period\b/i.test(text) ||
+      /\bmost\s+recent\s+pay\s*period\b/i.test(text)
+    ) {
+      return ivyMostRecentCompletedPayPeriod();
+    }
 
     const iso = [...text.matchAll(/\b(20\d{2}-\d{2}-\d{2})\b/g)].map(match => match[1]);
     if (iso.length >= 2 && ivyPayablesDate(iso[0]) && ivyPayablesDate(iso[1])) {
@@ -2294,7 +2330,12 @@ function createPortal(options = {}) {
   }
 
   function ivyLooksLikePayablesCommand(prompt) {
-    return /vendor\s+payable|payables|vendor\s+payment|payroll\s+report|vendor\s+report/i.test(String(prompt || ''));
+    const text = String(prompt || '');
+    return /vendor\s+payable|payables|vendor\s+payment|payroll\s+report|vendor\s+report|pay\s*period/i.test(text) ||
+      (
+        /\breport\b/i.test(text) &&
+        /\b(last|previous|prior)\s+(?:2|two)\s+weeks?\b/i.test(text)
+      );
   }
 
   function ivyNewYorkClock(now = new Date()) {
