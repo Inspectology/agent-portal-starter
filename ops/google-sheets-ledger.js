@@ -63,6 +63,48 @@ async function readRows(accessToken, spreadsheetId, range) {
   return Array.isArray(body.values) ? body.values : [];
 }
 
+async function updateExceptionStatus(accessToken, spreadsheetId, {
+  sourceEmailId,
+  attachmentFilename = '',
+  status = 'Resolved',
+  resolutionNotes = ''
+} = {}) {
+  const id = sheetId({ spreadsheetId });
+  const rows = await readRows(accessToken, id, "'Exceptions'!A2:J");
+  const targetEmail = String(sourceEmailId || '');
+  const targetFile = String(attachmentFilename || '').trim().toLowerCase();
+
+  const index = rows.findIndex(row => {
+    const emailId = String(row[4] || '');
+    const filename = String(row[5] || '').trim().toLowerCase();
+    return emailId === targetEmail && (!targetFile || filename === targetFile);
+  });
+
+  if (index < 0) return { updated: false };
+
+  const sheetRow = index + 2;
+  const range = "'Exceptions'!H" + sheetRow + ":J" + sheetRow;
+  const encodedId = encodeURIComponent(id);
+  const encodedRange = encodeURIComponent(range);
+  const url =
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodedId}/values/${encodedRange}` +
+    '?valueInputOption=USER_ENTERED';
+
+  const resolvedAt = String(status || '').toLowerCase() === 'resolved'
+    ? new Date().toISOString()
+    : '';
+
+  await sheetsJson(accessToken, url, {
+    method: 'PUT',
+    body: JSON.stringify({
+      majorDimension: 'ROWS',
+      values: [[status, resolvedAt, resolutionNotes]]
+    })
+  });
+
+  return { updated: true, row: sheetRow };
+}
+
 function vendorActivityRow(activity = {}) {
   return [
     activity.receivedAt || '',
@@ -227,5 +269,6 @@ module.exports = {
   readRows,
   sheetId,
   summarizeVendorActivity,
+  updateExceptionStatus,
   vendorActivityRow
 };
