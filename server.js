@@ -964,6 +964,7 @@ async function askIvyOperations(config, prompt, identity, activity, exceptions) 
     'This is the staff mobile command center.',
     'Answer only from the operational context supplied in this request.',
     'Be concise, practical, and conversational.',
+    'Use plain text only. Do not use Markdown formatting, asterisks, headings, tables, or code fences.',
     'You can answer questions about recent vendor reports, vendor activity, statuses, property addresses, and open exceptions.',
     'This first mobile command version is read-only.',
     'Do not claim that you sent an email, replied to a message, changed Spectora, uploaded a file, resolved an exception, scheduled anything, or took another external action.',
@@ -2294,7 +2295,9 @@ function createPortal(options = {}) {
     const text = String(prompt || '');
 
     if (
-      /\b(last|previous|prior)\s+(?:2|two)\s+weeks?\b/i.test(text) ||
+      /\b(last|previous|prior|past|recent)\s+(?:2|two)\s+weeks?\b/i.test(text) ||
+      /\b(?:for|over|during)\s+(?:the\s+)?(?:last\s+|past\s+)?(?:2|two)\s+weeks?\b/i.test(text) ||
+      /\b(?:2|two)[- ]week\s+(?:report|summary|payables?|period)\b/i.test(text) ||
       /\blast\s+pay\s*period\b/i.test(text) ||
       /\bprevious\s+pay\s*period\b/i.test(text) ||
       /\bmost\s+recent\s+pay\s*period\b/i.test(text)
@@ -2331,11 +2334,13 @@ function createPortal(options = {}) {
 
   function ivyLooksLikePayablesCommand(prompt) {
     const text = String(prompt || '');
+    const twoWeekPhrase =
+      /\b(last|previous|prior|past|recent)\s+(?:2|two)\s+weeks?\b/i.test(text) ||
+      /\b(?:for|over|during)\s+(?:the\s+)?(?:last\s+|past\s+)?(?:2|two)\s+weeks?\b/i.test(text) ||
+      /\b(?:2|two)[- ]week\b/i.test(text);
+
     return /vendor\s+payable|payables|vendor\s+payment|payroll\s+report|vendor\s+report|pay\s*period/i.test(text) ||
-      (
-        /\breport\b/i.test(text) &&
-        /\b(last|previous|prior)\s+(?:2|two)\s+weeks?\b/i.test(text)
-      );
+      (/\breport|summary\b/i.test(text) && twoWeekPhrase);
   }
 
   function ivyNewYorkClock(now = new Date()) {
