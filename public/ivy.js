@@ -129,6 +129,109 @@ function renderActivity(body) {
     exceptionsList.append(el('div', { class: 'ivy-empty', text: 'Nothing needs attention.' }));
   } else {
     for (const item of exceptions) {
+      const vendorSelect = el('select', { class: 'ivy-review-input', 'aria-label': 'Correct vendor' }, [
+        el('option', { value: '', text: 'Choose vendor if needed' }),
+        el('option', { value: 'termite', text: 'Lynn Pest Management' }),
+        el('option', { value: 'chimney', text: 'Cambro Services' }),
+        el('option', { value: 'well_water', text: 'Atlantic Blue' }),
+        el('option', { value: 'septic', text: 'Young Septic' })
+      ]);
+
+      const knownVendor = {
+        'Lynn Pest Management': 'termite',
+        'Cambro Services': 'chimney',
+        'Atlantic Blue': 'well_water',
+        'Young Septic': 'septic'
+      }[item.vendor || ''];
+      if (knownVendor) vendorSelect.value = knownVendor;
+
+      const addressInput = el('input', {
+        class: 'ivy-review-input',
+        type: 'text',
+        placeholder: 'Correct property address if needed',
+        value: item.propertyAddress || ''
+      });
+
+      const reviewMessage = el('p', { class: 'ivy-review-message' });
+
+      const retryButton = el('button', {
+        class: 'ivy-primary ivy-review-action',
+        type: 'button',
+        text: 'Retry with corrections'
+      });
+
+      const resolveButton = el('button', {
+        class: 'ivy-ghost ivy-review-action',
+        type: 'button',
+        text: 'Mark resolved'
+      });
+
+      retryButton.addEventListener('click', async () => {
+        retryButton.disabled = true;
+        resolveButton.disabled = true;
+        reviewMessage.textContent = 'Retrying...';
+        try {
+          const body = await api('/api/admin/ivy/exceptions/retry', {
+            method: 'POST',
+            body: JSON.stringify({
+              sourceEmailId: item.sourceEmailId,
+              attachmentFilename: item.attachmentFilename,
+              vendorKey: vendorSelect.value,
+              propertyAddress: addressInput.value.trim()
+            })
+          });
+          const action = body?.result?.action || 'processed';
+          reviewMessage.textContent = action === 'review'
+            ? 'IVY still needs more information for this item.'
+            : 'Corrected. IVY reprocessed this item successfully.';
+          await loadActivity();
+        } catch (error) {
+          reviewMessage.textContent = error.message;
+        } finally {
+          retryButton.disabled = false;
+          resolveButton.disabled = false;
+        }
+      });
+
+      resolveButton.addEventListener('click', async () => {
+        if (!item.sourceEmailId) return;
+        resolveButton.disabled = true;
+        retryButton.disabled = true;
+        reviewMessage.textContent = 'Resolving...';
+        try {
+          await api('/api/admin/ivy/exceptions/resolve', {
+            method: 'POST',
+            body: JSON.stringify({
+              sourceEmailId: item.sourceEmailId,
+              attachmentFilename: item.attachmentFilename,
+              note: 'Manually resolved from the IVY dashboard.'
+            })
+          });
+          await loadActivity();
+        } catch (error) {
+          reviewMessage.textContent = error.message;
+        } finally {
+          resolveButton.disabled = false;
+          retryButton.disabled = false;
+        }
+      });
+
+      const correctionForm = el('div', { class: 'ivy-review-form' }, [
+        el('label', { class: 'ivy-review-label' }, [
+          el('span', { text: 'Vendor correction' }),
+          vendorSelect
+        ]),
+        el('label', { class: 'ivy-review-label' }, [
+          el('span', { text: 'Property correction' }),
+          addressInput
+        ]),
+        el('div', { class: 'ivy-review-actions' }, [
+          retryButton,
+          resolveButton
+        ]),
+        reviewMessage
+      ]);
+
       const details = el('div', { class: 'ivy-exception-details' }, [
         item.propertyAddress
           ? el('p', { text: 'Property: ' + item.propertyAddress })
@@ -139,6 +242,10 @@ function renderActivity(body) {
         item.candidateInspections
           ? el('p', { text: 'Candidate matches: ' + item.candidateInspections })
           : null,
+        item.resolutionNotes
+          ? el('p', { text: 'Review note: ' + item.resolutionNotes })
+          : null,
+        correctionForm,
         item.sourceEmailId
           ? el('p', { class: 'ivy-technical', text: 'Email ID: ' + item.sourceEmailId })
           : null
@@ -148,14 +255,14 @@ function renderActivity(body) {
       const detailsButton = el('button', {
         class: 'ivy-details-button',
         type: 'button',
-        text: 'View details',
+        text: 'Review / Fix',
         'aria-expanded': 'false'
       });
 
       detailsButton.addEventListener('click', () => {
         const expanded = detailsButton.getAttribute('aria-expanded') === 'true';
         detailsButton.setAttribute('aria-expanded', String(!expanded));
-        detailsButton.textContent = expanded ? 'View details' : 'Hide details';
+        detailsButton.textContent = expanded ? 'Review / Fix' : 'Hide review';
         details.hidden = expanded;
       });
 
