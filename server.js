@@ -475,18 +475,14 @@ function readJsonBody(req, maxBytes = 16_384) {
 }
 
 function resolvePortalOrigin(req, config) {
+  if (config.publicOrigin) return config.publicOrigin;
+
   const host = String(req.headers.host || '').trim();
   if (!/^[A-Za-z0-9.-]+(?::[0-9]+)?$/.test(host)) throw authError('Portal public origin is not configured', 500);
 
   const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
   const protocol = forwardedProto === 'http' && /^localhost(?::|$)/.test(host) ? 'http' : 'https';
-  const requestOrigin = `${protocol}://${host}`;
-
-  if (config.deploymentEnvironment && config.deploymentEnvironment !== 'production') {
-    return requestOrigin;
-  }
-
-  return config.publicOrigin || requestOrigin;
+  return `${protocol}://${host}`;
 }
 
 function base64UrlJson(value) {
