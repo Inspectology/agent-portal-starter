@@ -77,6 +77,48 @@ function sameVendor(left, right) {
   return normalize(left) === normalize(right);
 }
 
+function editDistanceWithin(left, right, maxDistance = 1) {
+  const a = String(left || '');
+  const b = String(right || '');
+  if (Math.abs(a.length - b.length) > maxDistance) return false;
+  if (a === b) return true;
+
+  const previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i += 1) {
+    const current = [i];
+    let rowMin = current[0];
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      current[j] = Math.min(
+        current[j - 1] + 1,
+        previous[j] + 1,
+        previous[j - 1] + cost
+      );
+      rowMin = Math.min(rowMin, current[j]);
+    }
+    if (rowMin > maxDistance) return false;
+    for (let j = 0; j < current.length; j += 1) previous[j] = current[j];
+  }
+  return previous[b.length] <= maxDistance;
+}
+
+function fuzzyStreetMatch(left, right) {
+  const leftStreet = normalizeStreet(String(left || '').split(',')[0]);
+  const rightStreet = normalizeStreet(String(right || '').split(',')[0]);
+  const leftNumber = leftStreet.match(/^(\d{1,6})\b/)?.[1] || '';
+  const rightNumber = rightStreet.match(/^(\d{1,6})\b/)?.[1] || '';
+  if (!leftNumber || leftNumber !== rightNumber) return false;
+
+  const leftTokens = leftStreet.split(/\s+/);
+  const rightTokens = rightStreet.split(/\s+/);
+  if (leftTokens.length !== rightTokens.length) return false;
+  if (leftTokens[leftTokens.length - 1] !== rightTokens[rightTokens.length - 1]) return false;
+
+  const leftCore = leftTokens.slice(1, -1).join('');
+  const rightCore = rightTokens.slice(1, -1).join('');
+  return Boolean(leftCore && rightCore && editDistanceWithin(leftCore, rightCore, 1));
+}
+
 function sameAddress(left, right) {
   const a = normalizeStreet(left);
   const b = normalizeStreet(right);
@@ -90,7 +132,8 @@ function sameAddress(left, right) {
       compactA === compactB ||
       compactA.includes(compactB) ||
       compactB.includes(compactA)
-    ))
+    )) ||
+    fuzzyStreetMatch(left, right)
   ));
 }
 
