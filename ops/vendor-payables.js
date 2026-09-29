@@ -153,7 +153,8 @@ function invoiceKey(item) {
   return [
     String(item?.sourceEmailId || ''),
     String(item?.invoiceNumber || ''),
-    String(item?.attachmentFilename || '')
+    String(item?.attachmentFilename || ''),
+    normalizeStreet(item?.propertyAddress || '')
   ].join('|');
 }
 
