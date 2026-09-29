@@ -2733,3 +2733,51 @@ input:focus-visible,
   }
 }
 
+.ivy-ops-panel {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--brand);
+  border-radius: 14px;
+  background: #fafafa;
+}
+
+.ivy-ops-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.ivy-ops-heading h2 {
+  margin: 2px 0 4px;
+  font-size: 20px;
+}
+
+.ivy-ops-heading p {
+  margin: 0;
+  font-size: 11px;
+}
+
+.ivy-sheet-link {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  text-decoration: none;
+}
+
+.ivy-ops-panel > .secondary-button {
+  justify-self: start;
+}
+
+@media (max-width: 620px) {
+  .ivy-ops-heading {
+    display: grid;
+  }
+
+  .ivy-sheet-link {
+    justify-self: start;
+  }
+}
+

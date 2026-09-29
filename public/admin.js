@@ -21,6 +21,11 @@ const driveBackupDate = document.getElementById('driveBackupDate');
 const driveBackupMessage = document.getElementById('driveBackupMessage');
 const driveBackupResults = document.getElementById('driveBackupResults');
 const launchReadinessResults = document.getElementById('launchReadinessResults');
+const ivyOpsResults = document.getElementById('ivyOpsResults');
+const ivySheetTest = document.getElementById('ivySheetTest');
+const ivyAttachmentTypeScan = document.getElementById('ivyAttachmentTypeScan');
+const ivyOpsMessage = document.getElementById('ivyOpsMessage');
+const ivyAttachmentTypeResults = document.getElementById('ivyAttachmentTypeResults');
 
 let adminKey = sessionStorage.getItem('inspectologyAdminKey') || '';
 let pendingChallenge = sessionStorage.getItem('inspectologyAdminChallenge') || '';
@@ -119,11 +124,45 @@ function renderLaunchReadiness(readiness = {}) {
   }
 }
 
+function renderIvyOperations(ivy = {}) {
+  if (!ivyOpsResults) return;
+  ivyOpsResults.replaceChildren();
+
+  const items = [
+    ['Identity', ivy.email || 'ivy@inspect-ology.com', Boolean(ivy.email)],
+    ['Operations Sheet', ivy.spreadsheetConfigured ? 'Configured' : 'Missing', Boolean(ivy.spreadsheetConfigured)],
+    ['Inbound Webhook', ivy.inboundWebhookConfigured ? 'Configured' : 'Missing', Boolean(ivy.inboundWebhookConfigured)],
+    ['Resend API', ivy.resendApiConfigured ? 'Configured' : 'Missing', Boolean(ivy.resendApiConfigured)],
+    ['Vendor Thank-you', ivy.thankReports ? 'Automatic' : 'Off', Boolean(ivy.thankReports)],
+    ['Spectora Upload', ivy.autoUpload ? 'LIVE' : 'Dry Run', true]
+  ];
+
+  for (const [label, value, ready] of items) {
+    ivyOpsResults.append(
+      el('div', { class: `launch-readiness-item ${ready ? 'launch-ready' : 'launch-missing'}` }, [
+        el('span', { text: label }),
+        el('strong', { text: value })
+      ])
+    );
+  }
+}
+
+async function loadIvyOperations() {
+  if (!ivyOpsResults) return;
+  try {
+    const body = await api('/api/admin/ops/status');
+    renderIvyOperations(body.ivy || {});
+  } catch (error) {
+    ivyOpsMessage.textContent = error.message;
+  }
+}
+
 async function verifyAdmin() {
   const body = await api('/api/admin/session');
   if (adminKey) sessionStorage.setItem('inspectologyAdminKey', adminKey);
   renderLaunchReadiness(body.readiness || {});
   showSearch(body);
+  await loadIvyOperations();
   return body;
 }
 
@@ -209,6 +248,63 @@ fallbackLoginForm.addEventListener('submit', async event => {
     loginMessage.textContent = error.message;
   }
 });
+
+if (ivySheetTest) {
+  ivySheetTest.addEventListener('click', async () => {
+    ivySheetTest.disabled = true;
+    ivyOpsMessage.textContent = 'Testing Google Sheet connection...';
+    try {
+      const body = await api('/api/admin/ops/sheet-test');
+      ivyOpsMessage.textContent =
+        `Connected. Found ${body.vendorRows || 0} configured vendor rows in the Operations Sheet.`;
+    } catch (error) {
+      ivyOpsMessage.textContent = error.message;
+    } finally {
+      ivySheetTest.disabled = false;
+    }
+  });
+}
+
+if (ivyAttachmentTypeScan) {
+  ivyAttachmentTypeScan.addEventListener('click', async () => {
+    ivyAttachmentTypeScan.disabled = true;
+    ivyOpsMessage.textContent = 'Inspecting recent Spectora attachment metadata...';
+    if (ivyAttachmentTypeResults) ivyAttachmentTypeResults.replaceChildren();
+    try {
+      const body = await api('/api/admin/ops/attachment-types');
+      const mappings = Array.isArray(body.mappings) ? body.mappings : [];
+      if (ivyAttachmentTypeResults) {
+        for (const item of mappings) {
+          const types = item.attachmentTypes?.length
+            ? item.attachmentTypes.join(', ')
+            : 'Not found in scanned attachments';
+          const examples = Array.isArray(item.examples) ? item.examples : [];
+          const exampleText = examples.length
+            ? examples.map(example =>
+                [example.name, example.filename, example.attachmentType]
+                  .filter(Boolean)
+                  .join(' | ')
+              ).join(' ; ')
+            : '';
+          const children = [
+            el('strong', { text: item.name }),
+            el('span', { text: types })
+          ];
+          if (exampleText) children.push(el('small', { text: exampleText }));
+          ivyAttachmentTypeResults.append(
+            el('div', { class: 'report-test-result' }, children)
+          );
+        }
+      }
+      ivyOpsMessage.textContent =
+        `Scanned ${body.scanned || 0} recent Spectora attachments across ${body.pagesScanned || 0} page(s).`;
+    } catch (error) {
+      ivyOpsMessage.textContent = error.message;
+    } finally {
+      ivyAttachmentTypeScan.disabled = false;
+    }
+  });
+}
 
 searchForm.addEventListener('submit', async event => {
   event.preventDefault();
