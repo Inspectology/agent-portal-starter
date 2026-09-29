@@ -255,6 +255,61 @@ h2 { font-size: 21px; margin: 3px 0 0; }
   margin: 0 !important;
   font-size: 12px !important;
 }
+.ivy-source-button {
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  color: var(--brand);
+  font-weight: 800;
+  padding: 10px 12px;
+}
+.ivy-source-panel {
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+}
+.ivy-source-meta p {
+  margin: 0 0 6px;
+  color: var(--ink);
+  font-size: 13px;
+}
+.ivy-source-message {
+  margin-top: 12px;
+}
+.ivy-source-body {
+  margin: 7px 0 0;
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-radius: 10px;
+  background: var(--soft);
+  padding: 10px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.ivy-source-attachments {
+  display: grid;
+  gap: 8px;
+  margin-top: 7px;
+}
+.ivy-source-attachment {
+  display: block;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 9px 10px;
+  color: var(--brand);
+  background: var(--soft);
+  font-size: 13px;
+  font-weight: 800;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
 .ivy-technical {
   font-size: 12px !important;
   overflow-wrap: anywhere;
