@@ -25,7 +25,7 @@ const MIME_TYPES = {
 };
 
 const SECURITY_HEADERS = Object.freeze({
-  'Content-Security-Policy': "default-src 'self'; img-src 'self' https://static.wixstatic.com; style-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+  'Content-Security-Policy': "default-src 'self'; img-src 'self' data: https:; style-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
   'X-Content-Type-Options': 'nosniff',
   'Referrer-Policy': 'no-referrer',
   'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=()',
@@ -1234,6 +1234,66 @@ function createHttpsUpstream(config, transport = https) {
   });
 }
 
+function decodeProfilePhotoDataUrl(value) {
+  const match = String(value || '').match(/^data:image\/jpeg;base64,([A-Za-z0-9+/=]+)$/);
+  if (!match) throw authError('Profile photo must be a JPEG image', 400);
+
+  const buffer = Buffer.from(match[1], 'base64');
+  if (!buffer.length || buffer.length > 1_000_000) {
+    throw authError('Profile photo must be smaller than 1 MB after processing', 400);
+  }
+  if (buffer.length < 4 || buffer[0] !== 0xff || buffer[1] !== 0xd8) {
+    throw authError('Profile photo data is invalid', 400);
+  }
+  return buffer;
+}
+
+async function updateSpectoraAgentPhoto(config, connectionId, imageBuffer) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), config.upstreamTimeoutMs);
+
+  try {
+    const form = new FormData();
+    form.append(
+      'data[attributes][image]',
+      new Blob([imageBuffer], { type: 'image/jpeg' }),
+      'profile.jpg'
+    );
+
+    const response = await fetch(
+      `${SPECTORA_ORIGIN}/v2/connections/${encodeURIComponent(connectionId)}`,
+      {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${config.apiKey}`,
+          Accept: 'application/json'
+        },
+        body: form,
+        signal: controller.signal
+      }
+    );
+
+    if (!response.ok) {
+      response.body?.cancel?.().catch?.(() => {});
+      throw new UpstreamHttpError(response.status);
+    }
+
+    return await response.json();
+  } catch (error) {
+    if (error?.name === 'AbortError') throw new Error('Spectora API timeout');
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function connectionPhotoUrl(connection) {
+  const attrs = connection?.attributes || {};
+  return [attrs.thumb, attrs.image]
+    .find(value => typeof value === 'string' && /^https:\/\//i.test(value.trim()))
+    ?.trim() || '';
+}
+
 function query(pathname, filters) {
   const params = new URLSearchParams(filters);
   return `${pathname}?${params.toString().replace(/%5B/g, '[').replace(/%5D/g, ']')}`;
@@ -1764,7 +1824,7 @@ function createPortal(options = {}) {
         agency: attrs.agency_name || '',
         city: attrs.city || '',
         state: attrs.state || '',
-        photoUrl: sample.agent.photoUrl
+        photoUrl: connectionPhotoUrl(connection) || sample.agent.photoUrl
       },
       stats: {
         totalInspections: Number(statAttrs.total_inspections_count || attrs.total_inspections_count || 0),
@@ -2393,6 +2453,58 @@ function createPortal(options = {}) {
             reportName: backup.fullReport?.name || '',
             inspection
           });
+          status = 200;
+          return;
+        }
+
+
+        if (req.method === 'POST' && operation === 'profile-photo') {
+          const body = await readJsonBody(req, 1_500_000);
+          const imageBuffer = decodeProfilePhotoDataUrl(body.imageData);
+
+          if (config.mode === 'demo') {
+            sendJson(res, 200, { photoUrl: body.imageData, demo: true });
+            status = 200;
+            return;
+          }
+
+          const connectionResponse = await fetchUpstream(
+            'Connection photo authorization lookup',
+            `/v2/connections/${encodeURIComponent(connectionId)}`
+          );
+          assertRecordId(connectionResponse.data, connectionId, 'connection');
+          assertCompanyScope([connectionResponse.data], config.companyId);
+
+          let updated;
+          try {
+            updated = await updateSpectoraAgentPhoto(config, connectionId, imageBuffer);
+          } catch (error) {
+            error.safeDetail = error instanceof UpstreamHttpError
+              ? `Profile photo update returned HTTP ${error.upstreamStatus}`
+              : `Profile photo update failed: ${error.message}`;
+            throw error;
+          }
+
+          let photoUrl = connectionPhotoUrl(updated?.data);
+          if (!photoUrl) {
+            const refreshed = await fetchUpstream(
+              'Connection photo refresh',
+              `/v2/connections/${encodeURIComponent(connectionId)}`
+            );
+            assertRecordId(refreshed.data, connectionId, 'connection');
+            assertCompanyScope([refreshed.data], config.companyId);
+            photoUrl = connectionPhotoUrl(refreshed.data);
+          }
+
+          if (!photoUrl) {
+            sendJson(res, 502, {
+              error: 'Spectora accepted the photo but did not return an updated image URL'
+            });
+            status = 502;
+            return;
+          }
+
+          sendJson(res, 200, { photoUrl });
           status = 200;
           return;
         }
