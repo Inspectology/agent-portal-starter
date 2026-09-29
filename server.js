@@ -2152,6 +2152,52 @@ function createPortal(options = {}) {
     }).format(Number(value || 0));
   }
 
+  function ivyVendorPayablesText(report, vendorKey) {
+    const vendor = VENDORS.find(item => item.key === vendorKey);
+    const group = report.groups.find(item => item.vendor === vendor?.company);
+    if (!vendor || !group) {
+      return [
+        (vendor?.company || 'Vendor') + ' Payables',
+        'Pay period: ' + report.start + ' through ' + report.end,
+        '',
+        'No matching vendor inspections were found in Spectora for this completed pay period.'
+      ].join('\n');
+    }
+
+    const lines = [
+      vendor.company + ' Payables',
+      'Pay period: ' + report.start + ' through ' + report.end,
+      'Inspection count: ' + group.rows.length,
+      ''
+    ];
+
+    for (const row of group.rows) {
+      lines.push(
+        String(row.inspectionDate || '').slice(0, 10) + ' | ' +
+        row.propertyAddress +
+        ' | Report: ' + (row.reportReceived ? 'Received' : 'MISSING') +
+        ' | Invoice: ' + (row.invoiceReceived ? 'Received' : 'MISSING') +
+        ' | Amount: ' + (row.amountDue == null ? 'Needs Review' : ivyMoney(row.amountDue)) +
+        ' | ' + row.status
+      );
+    }
+
+    lines.push('');
+    lines.push('Known payable total: ' + ivyMoney(group.payableTotal));
+    lines.push('Missing reports: ' + group.missingReports);
+    lines.push('Missing invoices: ' + group.missingInvoices);
+    lines.push('Needs review: ' + group.needsReview);
+
+    if (vendor.key === 'chimney' && group.needsReview > 0) {
+      lines.push('');
+      lines.push(
+        'Cambro pricing is not treated as a fixed rate. Jobs without a matched invoice or approved price stay in Needs Review and are not counted as $0 owed.'
+      );
+    }
+
+    return lines.join('\n');
+  }
+
   function ivyPayablesText(report) {
     const lines = [
       'IVY Vendor Payables Report',
@@ -2335,6 +2381,15 @@ function createPortal(options = {}) {
     return null;
   }
 
+  function ivyVendorKeyFromPrompt(prompt) {
+    const text = String(prompt || '');
+    if (/\b(cambro|chimney)\b/i.test(text)) return 'chimney';
+    if (/\b(lynn\s*pest|lynn|termite|wdo)\b/i.test(text)) return 'termite';
+    if (/\b(atlantic\s*blue|well\s*yield|water\s*(?:quality|test|testing))\b/i.test(text)) return 'well_water';
+    if (/\b(young\s*septic|septic)\b/i.test(text)) return 'septic';
+    return '';
+  }
+
   function ivyLooksLikePayablesCommand(prompt) {
     const text = String(prompt || '');
     const twoWeekPhrase =
@@ -2342,8 +2397,14 @@ function createPortal(options = {}) {
       /\b(?:for|over|during)\s+(?:the\s+)?(?:last\s+|past\s+)?(?:2|two)\s+weeks?\b/i.test(text) ||
       /\b(?:2|two)[- ]week\b/i.test(text);
 
+    const vendorSpecificOperationalRequest =
+      Boolean(ivyVendorKeyFromPrompt(text)) &&
+      twoWeekPhrase &&
+      /\b(inspections?|jobs?|services?|total|owed|due|payable|payables|amount|report|summary)\b/i.test(text);
+
     return /vendor\s+payable|payables|vendor\s+payment|payroll\s+report|vendor\s+report|pay\s*period/i.test(text) ||
-      (/\breport|summary\b/i.test(text) && twoWeekPhrase);
+      (/\breport|summary\b/i.test(text) && twoWeekPhrase) ||
+      vendorSpecificOperationalRequest;
   }
 
   function ivyNewYorkClock(now = new Date()) {
@@ -3661,10 +3722,14 @@ function createPortal(options = {}) {
             : null;
           if (payablesRange) {
             const report = await ivyBuildPayables(token, payablesRange.start, payablesRange.end);
+            const vendorKey = ivyVendorKeyFromPrompt(prompt);
             sendJson(res, 200, {
               status: 'ok',
-              answer: ivyPayablesText(report),
+              answer: vendorKey
+                ? ivyVendorPayablesText(report, vendorKey)
+                : ivyPayablesText(report),
               report,
+              vendorKey: vendorKey || null,
               model: 'ivy-payables'
             });
             status = 200;
