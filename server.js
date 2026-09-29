@@ -28,6 +28,7 @@ const {
   uploadSpectoraAttachment
 } = require('./ops/vendor-intake');
 const {
+  attachmentMeta,
   downloadAttachment,
   listReceivedAttachments,
   receivedEmailToMessage,
@@ -3490,6 +3491,94 @@ function createPortal(options = {}) {
             sentTo: body.to || config.operations.payablesEmailTo,
             report
           });
+          status = 200;
+          return;
+        }
+
+        if (req.method === 'POST' && pathname === '/api/admin/ivy/exceptions/source') {
+          const body = await readJsonBody(req, 8_000);
+          const sourceEmailId = String(body.sourceEmailId || '').trim();
+          if (!sourceEmailId) {
+            sendJson(res, 400, { error: 'Source email ID is required' });
+            status = 400;
+            return;
+          }
+          if (!config.operations.resendApiKey) {
+            sendJson(res, 503, { error: 'IVY email source access is not configured' });
+            status = 503;
+            return;
+          }
+
+          const [email, attachments] = await Promise.all([
+            retrieveReceivedEmail(config.operations.resendApiKey, sourceEmailId),
+            listReceivedAttachments(config.operations.resendApiKey, sourceEmailId)
+          ]);
+
+          sendJson(res, 200, {
+            status: 'ok',
+            source: {
+              id: sourceEmailId,
+              from: String(email?.from || ''),
+              replyTo: String(email?.reply_to || email?.replyTo || ''),
+              to: Array.isArray(email?.to) ? email.to : [],
+              cc: Array.isArray(email?.cc) ? email.cc : [],
+              subject: String(email?.subject || ''),
+              text: String(email?.text || email?.text_body || email?.plain_text || ''),
+              createdAt: String(email?.created_at || ''),
+              attachments: (attachments || []).map(item => {
+                const meta = attachmentMeta(item);
+                return {
+                  id: meta.id,
+                  filename: meta.filename,
+                  contentType: meta.contentType,
+                  size: meta.size
+                };
+              })
+            }
+          });
+          status = 200;
+          return;
+        }
+
+        if (req.method === 'GET' && pathname === '/api/admin/ivy/exceptions/attachment') {
+          const sourceEmailId = String(url.searchParams.get('emailId') || '').trim();
+          const attachmentId = String(url.searchParams.get('attachmentId') || '').trim();
+          if (!sourceEmailId || !attachmentId) {
+            sendJson(res, 400, { error: 'Email and attachment IDs are required' });
+            status = 400;
+            return;
+          }
+          if (!config.operations.resendApiKey) {
+            sendJson(res, 503, { error: 'IVY attachment access is not configured' });
+            status = 503;
+            return;
+          }
+
+          const attachments = await listReceivedAttachments(
+            config.operations.resendApiKey,
+            sourceEmailId
+          );
+          const match = (attachments || [])
+            .map(attachmentMeta)
+            .find(item => item.id === attachmentId);
+
+          if (!match || !match.downloadUrl) {
+            sendJson(res, 404, { error: 'Source attachment not found' });
+            status = 404;
+            return;
+          }
+
+          const file = await downloadAttachment(match.downloadUrl);
+          const safeName = String(match.filename || 'attachment')
+            .replace(/[\r\n"\\]/g, '_')
+            .slice(0, 180);
+          res.writeHead(200, headers({
+            'Content-Type': match.contentType || 'application/octet-stream',
+            'Content-Length': String(file.length),
+            'Content-Disposition': 'inline; filename="' + safeName + '"',
+            'Cache-Control': 'private, no-store'
+          }));
+          res.end(file);
           status = 200;
           return;
         }
