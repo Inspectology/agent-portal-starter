@@ -151,43 +151,75 @@ function mergedAgent(agent) {
   };
 }
 
-function resizeProfilePhoto(file, size = 360) {
-  return new Promise((resolve, reject) => {
-    const supportedTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
-    if (!file || !supportedTypes.has(String(file.type || '').toLowerCase())) {
-      reject(new Error('Use a JPG, PNG, WebP, or GIF photo.'));
-      return;
-    }
-    if (file.size > 8_000_000) {
-      reject(new Error('Please choose a photo smaller than 8 MB.'));
-      return;
+async function resizeProfilePhoto(file, size = 360) {
+  if (!file) throw new Error('Choose a photo first.');
+
+  const type = String(file.type || '').toLowerCase();
+  const name = String(file.name || '').toLowerCase();
+  if (
+    type === 'image/heic' ||
+    type === 'image/heif' ||
+    name.endsWith('.heic') ||
+    name.endsWith('.heif')
+  ) {
+    throw new Error('HEIC photos are not supported yet. Please choose or export a JPG or PNG.');
+  }
+
+  const supportedTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+  if (!supportedTypes.has(type)) {
+    throw new Error('Use a JPG, PNG, WebP, or GIF photo.');
+  }
+  if (file.size > 8_000_000) {
+    throw new Error('Please choose a photo smaller than 8 MB.');
+  }
+
+  let source = null;
+  let width = 0;
+  let height = 0;
+  let objectUrl = '';
+
+  try {
+    if (typeof createImageBitmap === 'function') {
+      source = await createImageBitmap(file);
+      width = source.width;
+      height = source.height;
+    } else {
+      objectUrl = URL.createObjectURL(file);
+      source = await new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error('The photo format could not be opened by this browser.'));
+        image.src = objectUrl;
+      });
+      width = source.naturalWidth;
+      height = source.naturalHeight;
     }
 
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error('The photo could not be read.'));
-    reader.onload = () => {
-      const image = new Image();
-      image.onerror = () => reject(new Error('The photo could not be opened.'));
-      image.onload = () => {
-        const canvas = document.createElement('canvas');
-        canvas.width = size;
-        canvas.height = size;
-        const context = canvas.getContext('2d');
-        if (!context) {
-          reject(new Error('Photo editing is not supported on this device.'));
-          return;
-        }
+    if (!width || !height) throw new Error('The photo dimensions could not be read.');
 
-        const sourceSize = Math.min(image.naturalWidth, image.naturalHeight);
-        const sx = (image.naturalWidth - sourceSize) / 2;
-        const sy = (image.naturalHeight - sourceSize) / 2;
-        context.drawImage(image, sx, sy, sourceSize, sourceSize, 0, 0, size, size);
-        resolve(canvas.toDataURL('image/jpeg', 0.84));
-      };
-      image.src = String(reader.result || '');
-    };
-    reader.readAsDataURL(file);
-  });
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Photo editing is not supported on this device.');
+
+    const sourceSize = Math.min(width, height);
+    const sx = (width - sourceSize) / 2;
+    const sy = (height - sourceSize) / 2;
+    context.drawImage(source, sx, sy, sourceSize, sourceSize, 0, 0, size, size);
+
+    const output = canvas.toDataURL('image/jpeg', 0.84);
+    if (!output.startsWith('data:image/jpeg;base64,')) {
+      throw new Error('The photo could not be prepared for upload.');
+    }
+    return output;
+  } catch (error) {
+    if (error?.message) throw error;
+    throw new Error('The photo format could not be opened by this browser.');
+  } finally {
+    if (source && typeof source.close === 'function') source.close();
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+  }
 }
 
 function renderProfilePhotoControl(agent) {
