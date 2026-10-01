@@ -260,6 +260,8 @@ function classifyDocument(message = {}, vendor = null) {
       /water test results/i.test(combined) ||
       /water testing report/i.test(combined) ||
       /water quality/i.test(combined) ||
+      /water\+?plumbing inspection/i.test(combined) ||
+      /water plumbing inspection/i.test(combined) ||
       /failing bacteria/i.test(combined) ||
       /failing bac/i.test(combined) ||
       /lead results/i.test(combined)
