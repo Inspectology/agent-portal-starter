@@ -1183,7 +1183,8 @@ async function extractIvyPdfFacts(config, pdfBuffer, filename, vendorName = '') 
     throw new Error('IVY PDF fact extraction returned invalid JSON');
   }
 
-  const totalDue = Number(parsed?.totalDue);
+  const hasTotalDue = parsed?.totalDue !== null && parsed?.totalDue !== undefined && parsed?.totalDue !== '';
+  const totalDue = hasTotalDue ? Number(parsed.totalDue) : null;
   return {
     propertyAddress: String(parsed?.propertyAddress || '').trim().slice(0, 300),
     projectName: String(parsed?.projectName || '').trim().slice(0, 240),
@@ -2901,7 +2902,9 @@ function createPortal(options = {}) {
           })[0]?.raw ||
           ''
         ).trim();
-        const amount = Number.isFinite(Number(pdfFacts?.totalDue))
+        const amount = pdfFacts?.totalDue !== null &&
+          pdfFacts?.totalDue !== undefined &&
+          Number.isFinite(Number(pdfFacts.totalDue))
           ? Number(pdfFacts.totalDue)
           : fallbackInvoice.amount;
         const invoiceNumber = String(
