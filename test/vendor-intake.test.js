@@ -176,3 +176,33 @@ test('extracts invoice amount, project and invoice number from parsed PDF text',
   assert.equal(invoice.invoiceNumber, '9-3792');
 });
 
+
+test('recognizes SanAir environmental laboratory report', () => {
+  const message = {
+    from: 'SanAir Technologies Laboratory <LabReports@SanAir.com>',
+    subject: 'Analysis Report for Job 26057784 is complete.',
+    body: 'Your Analysis is complete. Your report in PDF format is attached.',
+    filenames: ['26057784_2936 Bachman_202692992531.pdf']
+  };
+  const classified = classifyVendor(message);
+  assert.equal(classified.vendor.key, 'environmental_lab');
+  assert.equal(classifyDocument(message, classified.vendor).type, 'report');
+});
+
+test('extracts Atlantic Blue style job address and total due from invoice PDF text', () => {
+  const invoice = extractInvoiceData(
+    'Invoice 443225850\nJob Address\nAdam & Rachel Smith\n14210 Greencroft Lane\nCockeysville, MD 21030 USA\nTotal Due $160.00'
+  );
+  assert.equal(invoice.amount, 160);
+  assert.equal(invoice.invoiceNumber, '443225850');
+  assert.match(invoice.propertyAddress, /14210 Greencroft Lane/i);
+});
+
+test('extracts Young Septic style job address from invoice PDF text', () => {
+  const invoice = extractInvoiceData(
+    'INVOICE\n43338484\nJOB ADDRESS\nKevin Johnson\n11315 John Carroll Road\nOwings Mills, MD 21117 USA\nBALANCE DUE $325.00'
+  );
+  assert.equal(invoice.amount, 325);
+  assert.equal(invoice.invoiceNumber, '43338484');
+  assert.match(invoice.propertyAddress, /11315 John Carroll Road/i);
+});
