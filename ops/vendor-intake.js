@@ -73,6 +73,23 @@ const VENDORS = Object.freeze([
     ],
     attachmentTypeEnv: 'OPS_ATTACHMENT_TYPE_SEPTIC',
     documentedDefaultAttachmentType: 'septic'
+  },
+  {
+    key: 'environmental_lab',
+    service: 'Environmental Lab',
+    company: 'SanAir Technologies Laboratory',
+    emails: [
+      'labreports@sanair.com'
+    ],
+    domains: ['sanair.com'],
+    servicePatterns: [/mold/i, /asbestos/i, /environmental/i, /air sample/i, /lab/i],
+    messagePatterns: [
+      /analysis report for job/i,
+      /sanair technologies/i,
+      /final report/i
+    ],
+    attachmentTypeEnv: 'OPS_ATTACHMENT_TYPE_ENVIRONMENTAL_LAB',
+    documentedDefaultAttachmentType: 'other'
   }
 ]);
 
@@ -252,24 +269,49 @@ function classifyDocument(message = {}, vendor = null) {
     return { type: 'report', reason: 'Atlantic Blue water results PDF', displayName: 'Water Quality Report' };
   }
 
+  if (
+    vendor?.key === 'environmental_lab' &&
+    filenames.some(name => /\.pdf$/i.test(name)) &&
+    (
+      /analysis report for job/i.test(combined) ||
+      /final report/i.test(combined) ||
+      /sanair/i.test(combined)
+    )
+  ) {
+    return {
+      type: 'report',
+      reason: 'SanAir environmental laboratory report PDF',
+      displayName: 'Environmental Lab Report'
+    };
+  }
+
   return { type: 'review', reason: 'Attachment type is not confidently classified' };
 }
 
 function extractInvoiceData(text = '') {
   const source = String(text || '');
   const amountMatch =
-    source.match(/Amount Due\s*:\s*\$?([0-9,]+(?:\.\d{2})?)/i) ||
+    source.match(/Amount Due\s*:?\s*\$?([0-9,]+(?:\.\d{2})?)/i) ||
+    source.match(/Total Due[\s\S]{0,80}?\$([0-9,]+(?:\.\d{2})?)/i) ||
     source.match(/Balance Due[\s\S]{0,120}?\$([0-9,]+(?:\.\d{2})?)/i);
+  const jobAddressMatch =
+    source.match(/Job Address[\s\r\n]+(?:[^\r\n]+[\r\n]+)?([0-9]{1,6}\s+[^\r\n]+)(?:[\r\n]+([^\r\n]+))?/i);
   const projectMatch =
-    source.match(/Project\s*[\r\n]+([^\r\n]+)/i) ||
-    source.match(/(?:property|address)\s*:?\s*([0-9]{1,6}\s+[^\r\n,]+(?:,\s*[^\r\n]+)?)/i);
+    source.match(/Project\s*(?:Name)?\s*:?\s*[\r\n]+([^\r\n]+)/i) ||
+    source.match(/(?:property|property address|service address|address)\s*:?\s*([0-9]{1,6}\s+[^\r\n,]+(?:,\s*[^\r\n]+)?)/i);
   const invoiceMatch =
     source.match(/Invoice\s*#?\s*[\r\n: ]+([A-Za-z0-9-]+)/i) ||
-    source.match(/\bInvoice\s+([0-9]+-[0-9]+)\b/i);
+    source.match(/\bInvoice\s+([0-9]+-[0-9]+)\b/i) ||
+    source.match(/\bInvoice\s+([0-9]{5,})\b/i);
+
+  const jobAddress = jobAddressMatch
+    ? [jobAddressMatch[1], jobAddressMatch[2]].filter(Boolean).join(', ').trim()
+    : '';
 
   return {
     amount: amountMatch ? Number(amountMatch[1].replace(/,/g, '')) : null,
-    project: projectMatch?.[1]?.trim() || '',
+    project: jobAddress || projectMatch?.[1]?.trim() || '',
+    propertyAddress: jobAddress,
     invoiceNumber: invoiceMatch?.[1]?.trim() || ''
   };
 }
