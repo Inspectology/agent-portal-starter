@@ -1113,6 +1113,87 @@ async function askOpenAiAboutReport(config, pdfBuffer, filename, question, histo
   };
 }
 
+async function extractIvyPdfFacts(config, pdfBuffer, filename, vendorName = '') {
+  if (!config.ai.apiKey || !pdfBuffer?.length) return null;
+
+  const instructions = [
+    'Extract operational facts from this vendor PDF for Inspectology.',
+    'Use only information explicitly printed in the PDF. Never infer or guess.',
+    'Return one JSON object only, with no markdown and no surrounding commentary.',
+    'Use these keys exactly: propertyAddress, projectName, invoiceNumber, totalDue, completedDate, reportType.',
+    'propertyAddress should be the job, service, or property address, including city, state, and ZIP when printed.',
+    'Do not use Inspectology billing or mailing addresses as propertyAddress.',
+    'projectName should preserve the printed project or job name when present.',
+    'invoiceNumber should preserve the printed invoice number.',
+    'totalDue should be a number without a dollar sign when explicitly shown, otherwise null.',
+    'completedDate should preserve the printed completed or report date when present.',
+    'reportType should be a short factual label from the document, such as Well Yield, Water Test Results, Septic Inspection, or Environmental Lab Report.',
+    'Use an empty string for unavailable text fields and null for unavailable totalDue.'
+  ].join(' ');
+
+  const requestBody = JSON.stringify({
+    model: config.ai.model,
+    store: false,
+    max_output_tokens: 450,
+    instructions,
+    input: [{
+      role: 'user',
+      content: [
+        {
+          type: 'input_file',
+          filename: String(filename || 'vendor-document.pdf').slice(0, 180),
+          file_data: `data:application/pdf;base64,${pdfBuffer.toString('base64')}`
+        },
+        {
+          type: 'input_text',
+          text: `Vendor: ${String(vendorName || '').slice(0, 120)}`
+        }
+      ]
+    }]
+  });
+
+  const response = await requestJson(
+    'https://api.openai.com/v1/responses',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.ai.apiKey}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(requestBody)
+      },
+      timeout: 45_000
+    },
+    requestBody,
+    2_000_000
+  );
+
+  if (response.statusCode < 200 || response.statusCode > 299 || !response.json) {
+    const message = response.json?.error?.message || `OpenAI returned HTTP ${response.statusCode}`;
+    throw new Error(message);
+  }
+
+  const output = openAiOutputText(response.json).trim();
+  const objectText = output.match(/\{[\s\S]*\}/)?.[0] || '';
+  if (!objectText) throw new Error('IVY PDF fact extraction returned no JSON object');
+
+  let parsed;
+  try {
+    parsed = JSON.parse(objectText);
+  } catch {
+    throw new Error('IVY PDF fact extraction returned invalid JSON');
+  }
+
+  const totalDue = Number(parsed?.totalDue);
+  return {
+    propertyAddress: String(parsed?.propertyAddress || '').trim().slice(0, 300),
+    projectName: String(parsed?.projectName || '').trim().slice(0, 240),
+    invoiceNumber: String(parsed?.invoiceNumber || '').trim().slice(0, 120),
+    totalDue: Number.isFinite(totalDue) ? totalDue : null,
+    completedDate: String(parsed?.completedDate || '').trim().slice(0, 80),
+    reportType: String(parsed?.reportType || '').trim().slice(0, 120)
+  };
+}
+
 function assertCompanyScope(records, companyId) {
   for (const record of records) {
     const attributeId = record?.attributes?.company_id;
@@ -2586,6 +2667,105 @@ function createPortal(options = {}) {
     });
   }
 
+  async function ivyReadPdfFacts(emailId, message, vendor) {
+    const pdf = (message.attachments || []).find(item =>
+      /\.pdf$/i.test(String(item.filename || '')) &&
+      !/^well yield disclaimer\.pdf$/i.test(String(item.filename || '').trim())
+    );
+    if (!pdf || !config.ai.apiKey) return null;
+
+    let attachment = pdf;
+    if (!attachment.downloadUrl && attachment.id) {
+      attachment = {
+        ...attachment,
+        ...attachmentMeta(
+          await retrieveReceivedAttachment(
+            config.operations.resendApiKey,
+            emailId,
+            attachment.id
+          )
+        )
+      };
+    }
+    if (!attachment.downloadUrl) return null;
+
+    const buffer = await downloadAttachment(attachment.downloadUrl);
+    return extractIvyPdfFacts(
+      config,
+      buffer,
+      attachment.filename,
+      vendor?.company || ''
+    );
+  }
+
+  function ivyAddressToken(value) {
+    return String(value || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  async function ivyCorrelatePropertyFromActivity(sheetsToken, vendor, message, facts = {}) {
+    const rows = await readRows(
+      sheetsToken,
+      config.operations.spreadsheetId,
+      "'Vendor Activity'!A2:O"
+    );
+    const receivedAt = Date.parse(message.receivedAt || '');
+    const hint = ivyAddressToken(facts.propertyAddress || facts.projectName || '');
+    const hintNumber = hint.match(/^\d{1,6}\b/)?.[0] || '';
+
+    const candidates = rows
+      .map(row => ({
+        receivedAt: String(row[0] || ''),
+        vendor: String(row[2] || ''),
+        propertyAddress: String(row[4] || ''),
+        sourceEmailId: String(row[7] || ''),
+        attachmentFilename: String(row[8] || '')
+      }))
+      .filter(item =>
+        item.propertyAddress &&
+        item.vendor.toLowerCase() === String(vendor?.company || '').toLowerCase() &&
+        item.sourceEmailId !== message.sourceEmailId
+      )
+      .map(item => {
+        let score = 0;
+        const candidate = ivyAddressToken(item.propertyAddress);
+        const candidateNumber = candidate.match(/^\d{1,6}\b/)?.[0] || '';
+
+        if (hint && candidate) {
+          if (hint === candidate || hint.includes(candidate) || candidate.includes(hint)) score += 100;
+          if (hintNumber && candidateNumber && hintNumber === candidateNumber) score += 45;
+
+          const hintWords = hint.split(' ').filter(word => word.length >= 4 && !/^\d+$/.test(word));
+          const overlap = hintWords.filter(word => candidate.includes(word)).length;
+          if (overlap >= 2) score += 35;
+          else if (overlap === 1) score += 15;
+        }
+
+        const candidateTime = Date.parse(item.receivedAt || '');
+        if (Number.isFinite(receivedAt) && Number.isFinite(candidateTime)) {
+          const deltaMinutes = Math.abs(receivedAt - candidateTime) / 60_000;
+          if (deltaMinutes <= 10) score += 55;
+          else if (deltaMinutes <= 60) score += 35;
+          else if (deltaMinutes <= 360) score += 15;
+          else if (deltaMinutes <= 1440) score += 5;
+        }
+
+        return { ...item, score };
+      })
+      .filter(item => item.score > 0)
+      .sort((a, b) => b.score - a.score);
+
+    if (!candidates.length) return '';
+    const top = candidates[0];
+    const second = candidates[1];
+    const margin = second ? top.score - second.score : top.score;
+    if (top.score < 55 || (second && margin < 20)) return '';
+    return top.propertyAddress;
+  }
+
   async function processIvyReceivedEmail(req, event, overrides = {}) {
     const emailId = String(event?.data?.email_id || '').trim();
     if (!emailId) throw authError('Resend received email ID is missing', 400);
@@ -2657,15 +2837,42 @@ function createPortal(options = {}) {
     }
 
     const vendor = classified.vendor;
-    const document = classifyDocument(message, vendor);
+    let document = classifyDocument(message, vendor);
+    let pdfFacts = null;
+
+    const needsPdfFacts =
+      document.type === 'invoice' ||
+      document.type === 'review' ||
+      vendor.key === 'environmental_lab' ||
+      (document.type === 'report' && !extractStreetCandidates(message).length);
+
+    if (needsPdfFacts) {
+      try {
+        pdfFacts = await ivyReadPdfFacts(emailId, message, vendor);
+      } catch (error) {
+        pdfFacts = { error: error.message };
+      }
+
+      if (pdfFacts && !pdfFacts.error) {
+        message.body = [
+          pdfFacts.propertyAddress,
+          pdfFacts.projectName,
+          pdfFacts.reportType,
+          message.body
+        ].filter(Boolean).join('\n');
+        document = classifyDocument(message, vendor);
+      }
+    }
 
     if (document.type === 'ignore') {
       if (!existingKeys.has(defaultKey)) {
+        const ignoredAddress = extractStreetCandidates(message)[0]?.raw || '';
         await appendVendorActivity(sheetsToken, config.operations, {
           receivedAt: message.receivedAt,
           entryType: 'Ignored',
           vendor: vendor.company,
           service: vendor.service,
+          propertyAddress: ignoredAddress,
           sourceEmailId: message.sourceEmailId,
           attachmentFilename: defaultFilename,
           status: 'Ignored',
@@ -2677,12 +2884,31 @@ function createPortal(options = {}) {
 
     if (document.type === 'invoice') {
       if (!existingKeys.has(defaultKey)) {
-        const invoice = extractInvoiceData([message.subject, message.body].join('\n'));
-        const street = extractStreetCandidates({
-          subject: invoice.project,
-          body: invoice.project,
-          filenames: []
-        })[0]?.raw || invoice.project || '';
+        const fallbackInvoice = extractInvoiceData([message.subject, message.body].join('\n'));
+        const project = String(
+          pdfFacts?.propertyAddress ||
+          pdfFacts?.projectName ||
+          fallbackInvoice.propertyAddress ||
+          fallbackInvoice.project ||
+          ''
+        ).trim();
+        const street = String(
+          pdfFacts?.propertyAddress ||
+          extractStreetCandidates({
+            subject: project,
+            body: project,
+            filenames: []
+          })[0]?.raw ||
+          ''
+        ).trim();
+        const amount = Number.isFinite(Number(pdfFacts?.totalDue))
+          ? Number(pdfFacts.totalDue)
+          : fallbackInvoice.amount;
+        const invoiceNumber = String(
+          pdfFacts?.invoiceNumber ||
+          fallbackInvoice.invoiceNumber ||
+          ''
+        ).trim();
 
         await appendVendorActivity(sheetsToken, config.operations, {
           receivedAt: message.receivedAt,
@@ -2692,13 +2918,25 @@ function createPortal(options = {}) {
           propertyAddress: street,
           sourceEmailId: message.sourceEmailId,
           attachmentFilename: defaultFilename,
-          vendorCost: invoice.amount,
-          invoiceNumber: invoice.invoiceNumber,
+          vendorCost: amount,
+          invoiceNumber,
           status: 'Received',
-          notes: invoice.project
-            ? 'Vendor invoice received.'
+          notes: street
+            ? 'Vendor invoice received. Property extracted from invoice PDF.'
             : 'Vendor invoice received. Property matching still needed.'
         });
+
+        if (!street) {
+          await ivyLogException(
+            sheetsToken,
+            message,
+            vendor,
+            pdfFacts?.error
+              ? 'Invoice received, but IVY could not read a property address from the invoice PDF'
+              : 'Invoice received, but no property address was found in the invoice PDF',
+            { filename: defaultFilename }
+          );
+        }
       }
       return { action: 'ledger', vendor: vendor.company, documentType: 'invoice' };
     }
@@ -2723,20 +2961,51 @@ function createPortal(options = {}) {
       }
     }
 
-    const streets = extractStreetCandidates(message);
+    let streets = extractStreetCandidates(message);
+
+    if (!streets.length) {
+      const correlatedAddress = await ivyCorrelatePropertyFromActivity(
+        sheetsToken,
+        vendor,
+        message,
+        pdfFacts || {}
+      );
+      if (correlatedAddress) {
+        message.body = [correlatedAddress, message.body].filter(Boolean).join('\n');
+        streets = extractStreetCandidates(message);
+      }
+    }
+
+    let inspectionSearch = null;
+    if (!streets.length && /^\d{1,6}\s+/.test(String(pdfFacts?.projectName || '').trim())) {
+      inspectionSearch = await searchSpectoraInspections(
+        config.apiKey,
+        String(pdfFacts.projectName).trim()
+      );
+      const projectMatches = Array.isArray(inspectionSearch?.data) ? inspectionSearch.data : [];
+      if (projectMatches.length === 1) {
+        const resolvedAddress = inspectionAddress(projectMatches[0]);
+        if (resolvedAddress) {
+          message.body = [resolvedAddress, message.body].filter(Boolean).join('\n');
+          streets = extractStreetCandidates(message);
+        }
+      }
+    }
+
     if (!streets.length) {
       if (!existingKeys.has(defaultKey)) {
         await ivyLogException(
           sheetsToken,
           message,
           vendor,
-          'No street address found in the report email or attachment name'
+          'No street address found after PDF extraction and recent-job correlation',
+          { filename: defaultFilename }
         );
       }
       return { action: 'review', vendor: vendor.company, reason: 'No address found' };
     }
 
-    const inspectionSearch = await searchSpectoraInspections(config.apiKey, streets[0].raw);
+    inspectionSearch = inspectionSearch || await searchSpectoraInspections(config.apiKey, streets[0].raw);
     const inspections = Array.isArray(inspectionSearch?.data) ? inspectionSearch.data : [];
     const match = selectInspectionMatch({ inspections, message, vendor });
 
