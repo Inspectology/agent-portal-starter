@@ -631,6 +631,7 @@ async function searchSpectoraInspections(apiKey, address) {
   const query = async fulltext => {
     const params = new URLSearchParams({
       'filter[fulltext]': fulltext,
+      'filter[include_canceled]': 'true',
       'page[size]': '50',
       sort: '-datetime'
     });
