@@ -368,6 +368,39 @@ function rowStatus({ reportReceived, invoiceReceived, amount, priceConfidence })
   return 'Ready to Pay';
 }
 
+function activityBackedInspections(inspections = [], activities = [], start, end) {
+  const knownIds = new Set(inspections.map(item => String(item?.id || '')).filter(Boolean));
+  const synthetic = [];
+
+  for (const item of activities) {
+    if (normalize(item.entryType) !== 'report') continue;
+    const inspectionId = String(item.spectoraInspectionId || '').trim();
+    const inspectionDateValue = String(item.inspectionDate || '').trim();
+    const dateOnly = inspectionDateValue.slice(0, 10);
+
+    if (!inspectionId || !inspectionDateValue || !item.propertyAddress) continue;
+    if (knownIds.has(inspectionId)) continue;
+    if (start && dateOnly < String(start)) continue;
+    if (end && dateOnly > String(end)) continue;
+
+    synthetic.push({
+      id: inspectionId,
+      attributes: {
+        full_address: item.propertyAddress,
+        property_address: item.propertyAddress,
+        datetime: inspectionDateValue,
+        service_names: '',
+        service_add_on_names: '',
+        description: '',
+        ivy_activity_backed: true
+      }
+    });
+    knownIds.add(inspectionId);
+  }
+
+  return synthetic;
+}
+
 function buildVendorPayablesReport({
   inspections = [],
   activities = [],
@@ -377,8 +410,12 @@ function buildVendorPayablesReport({
 } = {}) {
   const usedInvoiceKeys = new Set();
   const rows = [];
+  const reconciledInspections = [
+    ...inspections,
+    ...activityBackedInspections(inspections, activities, start, end)
+  ];
 
-  for (const inspection of inspections) {
+  for (const inspection of reconciledInspections) {
     const vendors = reconciledVendorsForInspection(
       inspection,
       activities,
@@ -473,7 +510,7 @@ function buildVendorPayablesReport({
     start: String(start || ''),
     end: String(end || ''),
     generatedAt: new Date().toISOString(),
-    inspectionCount: inspections.length,
+    inspectionCount: reconciledInspections.length,
     vendorServiceCount: rows.length,
     payableTotal: groups.reduce((sum, group) => sum + group.payableTotal, 0),
     groups,
@@ -482,6 +519,7 @@ function buildVendorPayablesReport({
 }
 
 module.exports = {
+  activityBackedInspections,
   attachmentMatchesVendor,
   buildVendorPayablesReport,
   expectedPrice,
