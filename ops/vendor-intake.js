@@ -495,6 +495,7 @@ function selectInspectionMatch({ inspections = [], message = {}, vendor = null }
     inspection: top.inspection,
     score: top.score,
     reasons: top.reasons,
+    canceled: Boolean(top.canceled),
     candidates: scored.slice(0, 5)
   };
 }
