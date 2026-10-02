@@ -404,28 +404,40 @@ function scoreInspection({ inspection, streetCandidates, vendor, receivedAt, zip
     reasons.push('partial street address');
   }
 
-  if (zip && inspectionZip(inspection) === zip) {
+  const zipMatched = Boolean(zip && inspectionZip(inspection) === zip);
+  if (zipMatched) {
     score += 15;
     reasons.push('ZIP match');
   }
 
-  if (serviceMatchesVendor(inspection, vendor)) {
+  const serviceMatched = serviceMatchesVendor(inspection, vendor);
+  if (serviceMatched) {
     score += 15;
     reasons.push('vendor service present');
   }
 
   const days = dateDistanceDays(receivedAt, attrs.datetime);
-  if (days !== null && days <= 45) {
+  const recentMatched = days !== null && days <= 45;
+  if (recentMatched) {
     score += days <= 14 ? 15 : 8;
     reasons.push(`inspection within ${Math.round(days)} days`);
   }
 
-  if (attrs.canceled_at || attrs.cancel_reason) {
-    score -= 40;
-    reasons.push('inspection appears canceled');
+  const canceled = Boolean(attrs.canceled_at || attrs.cancel_reason);
+  if (canceled) {
+    reasons.push('inspection is canceled; vendor service may still have been completed');
   }
 
-  return { inspection, score, reasons, exactStreet };
+  return {
+    inspection,
+    score,
+    reasons,
+    exactStreet,
+    zipMatched,
+    serviceMatched,
+    recentMatched,
+    canceled
+  };
 }
 
 function selectInspectionMatch({ inspections = [], message = {}, vendor = null }) {
@@ -455,7 +467,21 @@ function selectInspectionMatch({ inspections = [], message = {}, vendor = null }
   const second = scored[1];
   const margin = second ? top.score - second.score : top.score;
 
-  const safe = top.exactStreet && top.score >= 75 && (!second || margin >= 20);
+  const safeActive =
+    !top.canceled &&
+    top.exactStreet &&
+    top.score >= 75 &&
+    (!second || margin >= 20);
+
+  const safeCanceled =
+    top.canceled &&
+    top.exactStreet &&
+    top.serviceMatched &&
+    top.recentMatched &&
+    top.score >= 90 &&
+    (!second || margin >= 20);
+
+  const safe = safeActive || safeCanceled;
   if (!safe) {
     return {
       matched: false,
