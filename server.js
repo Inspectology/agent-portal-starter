@@ -3071,7 +3071,9 @@ function createPortal(options = {}) {
           sourceEmailId: message.sourceEmailId,
           attachmentFilename: file.filename,
           status: 'Duplicate',
-          notes: 'Same filename is already attached in Spectora.'
+          notes: match.canceled
+            ? 'Canceled Spectora inspection; vendor service was completed before cancellation. Same filename is already attached in Spectora.'
+            : 'Same filename is already attached in Spectora.'
         });
         results.push({ filename: file.filename, action: 'duplicate' });
         continue;
@@ -3089,9 +3091,13 @@ function createPortal(options = {}) {
           sourceEmailId: message.sourceEmailId,
           attachmentFilename: file.filename,
           status: 'Matched',
-          notes: attachmentType
-            ? 'Dry run: confidently matched. Automatic upload is disabled.'
-            : 'Dry run: confidently matched. Spectora attachment type still needs configuration.'
+          notes: match.canceled
+            ? 'Canceled Spectora inspection; vendor service was completed before cancellation. Dry run: confidently matched.'
+            : (
+                attachmentType
+                  ? 'Dry run: confidently matched. Automatic upload is disabled.'
+                  : 'Dry run: confidently matched. Spectora attachment type still needs configuration.'
+              )
         });
         results.push({ filename: file.filename, action: 'matched_dry_run' });
         continue;
@@ -3167,7 +3173,9 @@ function createPortal(options = {}) {
         status: 'Uploaded',
         spectoraAttachmentId: attachmentId,
         uploadedAt: new Date().toISOString(),
-        notes: 'Uploaded automatically by IVY.'
+        notes: match.canceled
+          ? 'Canceled Spectora inspection; vendor service was completed before cancellation. Uploaded automatically by IVY.'
+          : 'Uploaded automatically by IVY.'
       });
       results.push({ filename: file.filename, action: 'uploaded', attachmentId });
     }
