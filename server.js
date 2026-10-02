@@ -2145,6 +2145,7 @@ function createPortal(options = {}) {
       const response = await fetchUpstream('Vendor payables inspection lookup', query('/v2/inspections', {
         'filter[datetime_greater_than]': startIso,
         'filter[datetime_less_than]': endIso,
+        'filter[include_canceled]': 'true',
         'page[number]': String(page),
         'page[size]': '200',
         sort: 'datetime'
