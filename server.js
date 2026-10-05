@@ -984,7 +984,19 @@ function relationshipId(record, name, expectedType, allowNull = false) {
   return id;
 }
 
-function assertInspectionScope(records, companyId, connectionId) {
+function normalizedConnectionScope(connectionScope) {
+  if (connectionScope instanceof Set) {
+    return new Set([...connectionScope].map(value => String(value)));
+  }
+  if (Array.isArray(connectionScope)) {
+    return new Set(connectionScope.map(value => String(value)));
+  }
+  return new Set([String(connectionScope)]);
+}
+
+function assertInspectionScope(records, companyId, connectionScope) {
+  const allowedConnectionIds = normalizedConnectionScope(connectionScope);
+
   for (const record of records) {
     if (Object.hasOwn(record?.attributes || {}, 'company_id') && String(record.attributes.company_id ?? '') !== String(companyId)) {
       throw authError('Upstream inspection company attribute mismatch', 403);
@@ -992,7 +1004,7 @@ function assertInspectionScope(records, companyId, connectionId) {
     if (String(relationshipId(record, 'company', 'company') ?? '') !== String(companyId)) throw authError('Upstream inspection company scope mismatch', 403);
     const buyingAgentId = relationshipId(record, 'buying_agent', 'connection', true);
     const sellingAgentId = relationshipId(record, 'selling_agent', 'connection', true);
-    if (buyingAgentId !== connectionId && sellingAgentId !== connectionId) {
+    if (!allowedConnectionIds.has(String(buyingAgentId ?? '')) && !allowedConnectionIds.has(String(sellingAgentId ?? ''))) {
       throw authError('Upstream inspection connection scope mismatch', 403);
     }
   }
@@ -1788,6 +1800,44 @@ function createPortal(options = {}) {
     }
   }
 
+  async function allowedConnectionIdsForAgent(connectionId, connectionRecord = null) {
+    const allowed = new Set([String(connectionId)]);
+    if (config.mode === 'demo') return allowed;
+
+    let connection = connectionRecord;
+    if (!connection) {
+      const response = await fetchUpstream(
+        'Connection identity lookup',
+        `/v2/connections/${encodeURIComponent(connectionId)}`
+      );
+      connection = response.data;
+      assertRecordId(connection, connectionId, 'connection');
+      assertCompanyScope([connection], config.companyId);
+    }
+
+    const agentId = String(connection?.attributes?.agent_id ?? '').trim();
+    if (!/^[1-9][0-9]*$/.test(agentId)) return allowed;
+
+    const sameAgent = await fetchUpstream('Agent identity scope lookup', query('/v2/connections', {
+      'filter[agent_id]': agentId,
+      'page[size]': '200'
+    }));
+
+    if (!Array.isArray(sameAgent.data)) {
+      throw authError('Upstream agent identity scope missing', 403);
+    }
+
+    assertCompanyScope(sameAgent.data, config.companyId);
+
+    for (const record of sameAgent.data) {
+      if (record?.type !== 'connection') continue;
+      const id = String(record.id ?? '');
+      if (/^[1-9][0-9]*$/.test(id)) allowed.add(id);
+    }
+
+    return allowed;
+  }
+
   async function getAgentPayload(connectionId) {
     const sample = applyCustomization(readSampleAgent(), config.branding, config.demoAgent, config.demoTier);
     if (config.mode === 'demo') return { ...sample, meta: { mode: 'demo' } };
@@ -1803,6 +1853,7 @@ function createPortal(options = {}) {
     const connection = connections.data;
     assertRecordId(connection, connectionId, 'connection');
     assertCompanyScope([connection], scope);
+    const allowedConnectionIds = await allowedConnectionIdsForAgent(connectionId, connection);
     const stats = await fetchUpstream('Connection stats lookup', query('/v2/connection_stats', {
       'filter[id]': connectionId, 'page[size]': '1'
     }));
@@ -1813,7 +1864,7 @@ function createPortal(options = {}) {
       'filter[connection_id]': connectionId, include: 'buying_agent,selling_agent,company', sort: '-datetime', 'page[size]': '50'
     }));
     if (!Array.isArray(inspections.data)) throw authError('Upstream inspections data missing', 403);
-    assertInspectionScope(inspections.data, scope, connectionId);
+    assertInspectionScope(inspections.data, scope, allowedConnectionIds);
     const attrs = connection.attributes || {};
     const statAttrs = stats.data?.[0]?.attributes || {};
     return {
@@ -2387,7 +2438,8 @@ function createPortal(options = {}) {
           }));
 
           if (!Array.isArray(inspections.data)) throw authError('Upstream inspection search data missing', 502);
-          assertInspectionScope(inspections.data, config.companyId, connectionId);
+          const allowedConnectionIds = await allowedConnectionIdsForAgent(connectionId);
+          assertInspectionScope(inspections.data, config.companyId, allowedConnectionIds);
 
           sendJson(res, 200, {
             inspections: inspections.data.map(mapInspection)
@@ -2412,7 +2464,8 @@ function createPortal(options = {}) {
           );
 
           assertRecordId(detail.data, inspectionId, 'inspection');
-          assertInspectionScope([detail.data], config.companyId, connectionId);
+          const allowedConnectionIds = await allowedConnectionIdsForAgent(connectionId);
+          assertInspectionScope([detail.data], config.companyId, allowedConnectionIds);
 
           const contacts = mergeInspectorContacts(
             inspectorContactsFromDetail(detail),
