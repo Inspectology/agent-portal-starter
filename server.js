@@ -990,8 +990,9 @@ function mapInspection(insp) {
   const date = parsedDate && !Number.isNaN(parsedDate.getTime()) ? parsedDate.toISOString().slice(0, 10) : '';
 
   const fullAddress = [
-    attrs.property_address,
+    attrs.full_address,
     attrs.property_full_address,
+    attrs.property_address,
     attrs.address
   ].find(value => typeof value === 'string' && value.trim());
 
@@ -1764,14 +1765,26 @@ function createPortal(options = {}) {
   }
 
   async function fetchUpstream(stage, endpoint) {
-    try {
-      return await upstreamGet(endpoint);
-    } catch (error) {
-      error.safeDetail = error instanceof UpstreamHttpError
-        ? `${stage} returned HTTP ${error.upstreamStatus}`
-        : `${stage} failed: ${error.message}`;
-      throw error;
+    let lastError;
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await upstreamGet(endpoint);
+      } catch (error) {
+        lastError = error;
+        const status = error instanceof UpstreamHttpError ? Number(error.upstreamStatus || 0) : 0;
+        const retryableStatus = status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+        const retryableNetwork = !status && /timeout|ECONNRESET|ETIMEDOUT|socket hang up/i.test(String(error?.message || ''));
+
+        if ((!retryableStatus && !retryableNetwork) || attempt === 2) break;
+        await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
+      }
     }
+
+    lastError.safeDetail = lastError instanceof UpstreamHttpError
+      ? `${stage} returned HTTP ${lastError.upstreamStatus}`
+      : `${stage} failed: ${lastError.message}`;
+    throw lastError;
   }
 
   async function getAgentPayload(connectionId) {
@@ -1781,7 +1794,7 @@ function createPortal(options = {}) {
 
     let connections;
     try {
-      connections = await fetchUpstream('Connection lookup', `/v2/connections/${encodeURIComponent(connectionId)}`);
+      connections = await fetchUpstream('Connection lookup', `/v2/connections/${encodeURIComponent(connectionId)}?optional_fields=date_of_first_inspection`);
     } catch (error) {
       if (error instanceof UpstreamHttpError && error.upstreamStatus === 404) return null;
       throw error;
@@ -1789,19 +1802,31 @@ function createPortal(options = {}) {
     const connection = connections.data;
     assertRecordId(connection, connectionId, 'connection');
     assertCompanyScope([connection], scope);
-    const stats = await fetchUpstream('Connection stats lookup', query('/v2/connection_stats', {
-      'filter[id]': connectionId, 'page[size]': '1'
-    }));
-    if (!Array.isArray(stats.data) || stats.data.length !== 1) throw authError('Upstream stats record missing or ambiguous', 403);
-    assertRecordId(stats.data[0], connectionId, 'stats');
-    assertCompanyScope(stats.data, scope);
+    let statAttrs = {};
+    try {
+      const stats = await fetchUpstream('Connection stats lookup', query('/v2/connection_stats', {
+        'filter[id]': connectionId, 'page[size]': '1'
+      }));
+      if (Array.isArray(stats.data) && stats.data.length === 1) {
+        assertRecordId(stats.data[0], connectionId, 'stats');
+        assertCompanyScope(stats.data, scope);
+        statAttrs = stats.data[0]?.attributes || {};
+      }
+    } catch {
+      statAttrs = {};
+    }
+
     const inspections = await fetchUpstream('Inspection history lookup', query('/v2/inspections', {
-      'filter[connection_id]': connectionId, include: 'buying_agent,selling_agent,company', sort: '-datetime', 'page[size]': '50'
+      'filter[connection_id]': connectionId,
+      'fields[inspection]': 'slug,datetime,published_at,canceled_at,full_address,property_address,property_address_2,service_names,service_add_on_names,inspector_name',
+      include: 'company',
+      sort: '-datetime',
+      'page[size]': '50'
     }));
     if (!Array.isArray(inspections.data)) throw authError('Upstream inspections data missing', 403);
     assertInspectionCompanyScope(inspections.data, scope);
     const attrs = connection.attributes || {};
-    const statAttrs = stats.data?.[0]?.attributes || {};
+    const mappedInspections = (inspections.data || []).map(mapInspection);
     return {
       meta: { mode: 'live' },
       company: sample.company,
@@ -1817,14 +1842,24 @@ function createPortal(options = {}) {
       },
       stats: {
         totalInspections: Number(statAttrs.total_inspections_count || attrs.total_inspections_count || 0),
-        buyingInspections: Number(statAttrs.buying_inspections_count || 0),
-        sellingInspections: Number(statAttrs.selling_inspections_count || 0),
-        firstInspection: statAttrs.first_inspection_date || null,
-        lastInspection: statAttrs.last_inspection_date || null,
-        overallCount: Number(statAttrs.overall_inspections_count || 0)
+        buyingInspections: Number(
+          statAttrs.buying_inspections_count ||
+          attrs.buying_agent_inspections ||
+          attrs.buying_inspections_count ||
+          0
+        ),
+        sellingInspections: Number(
+          statAttrs.selling_inspections_count ||
+          attrs.selling_agent_inspections ||
+          attrs.selling_inspections_count ||
+          0
+        ),
+        firstInspection: statAttrs.first_inspection_date || attrs.date_of_first_inspection || null,
+        lastInspection: statAttrs.last_inspection_date || mappedInspections[0]?.date || null,
+        overallCount: Number(statAttrs.overall_inspections_count || attrs.total_inspections_count || 0)
       },
       tier: sample.tier,
-      inspections: (inspections.data || []).map(mapInspection)
+      inspections: mappedInspections
     };
   }
 
