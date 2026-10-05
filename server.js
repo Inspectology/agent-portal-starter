@@ -118,7 +118,11 @@ function createConfig(env = process.env) {
         .map(value => value.trim().toLowerCase())
         .filter(Boolean),
       securityEmail: String(env.ADMIN_SECURITY_EMAIL_TO || 'info@inspect-ology.com').trim().toLowerCase(),
-      from: String(env.ADMIN_AUTH_EMAIL_FROM || env.PROFILE_CHANGE_EMAIL_FROM || '').trim(),
+      from: String(
+        env.ADMIN_AUTH_EMAIL_FROM ||
+        env.PROFILE_CHANGE_EMAIL_FROM ||
+        'Agent Dashboard <agent-dashboard@inspect-ology.com>'
+      ).trim(),
       resendApiKey: String(env.RESEND_API_KEY || '').trim(),
       codeTtlSeconds: boundedInteger(env.ADMIN_CODE_TTL_SECONDS, 600, 300, 1800),
       sessionTtlSeconds: boundedInteger(env.ADMIN_SESSION_TTL_SECONDS, 43_200, 1800, 86_400),
@@ -331,15 +335,18 @@ function adminEmailAllowed(config, email) {
   return config.adminAuth.allowedEmails.includes(normalizedAdminEmail(email));
 }
 
-function adminEmailAuthConfigured(config) {
+function adminEmailAuthMissing(config) {
   const auth = config.adminAuth || {};
-  return Boolean(
-    auth.resendApiKey &&
-    auth.from &&
-    Array.isArray(auth.allowedEmails) &&
-    auth.allowedEmails.length &&
-    Buffer.byteLength(config.signingSecret || '', 'utf8') >= 32
-  );
+  const missing = [];
+  if (!auth.resendApiKey) missing.push('RESEND_API_KEY');
+  if (!auth.from) missing.push('ADMIN_AUTH_EMAIL_FROM');
+  if (!Array.isArray(auth.allowedEmails) || !auth.allowedEmails.length) missing.push('ADMIN_ALLOWED_EMAILS');
+  if (Buffer.byteLength(config.signingSecret || '', 'utf8') < 32) missing.push('PORTAL_SIGNING_SECRET');
+  return missing;
+}
+
+function adminEmailAuthConfigured(config) {
+  return adminEmailAuthMissing(config).length === 0;
 }
 
 function createAdminChallenge(config, email, code) {
@@ -1889,7 +1896,10 @@ function createPortal(options = {}) {
       }
       if (req.method === 'POST' && pathname === '/api/admin/auth/request-code') {
         if (!adminEmailAuthConfigured(config)) {
-          sendJson(res, 503, { error: 'Admin email sign-in is not configured yet' }); status = 503; return;
+          sendJson(res, 503, {
+            error: 'Admin email sign-in is not configured yet',
+            detail: `Missing deployment setting: ${adminEmailAuthMissing(config).join(', ') || 'unknown'}`
+          }); status = 503; return;
         }
 
         const body = await readJsonBody(req, 8_000);
@@ -1934,7 +1944,10 @@ function createPortal(options = {}) {
 
       if (req.method === 'POST' && pathname === '/api/admin/auth/verify') {
         if (!adminEmailAuthConfigured(config)) {
-          sendJson(res, 503, { error: 'Admin email sign-in is not configured yet' }); status = 503; return;
+          sendJson(res, 503, {
+            error: 'Admin email sign-in is not configured yet',
+            detail: `Missing deployment setting: ${adminEmailAuthMissing(config).join(', ') || 'unknown'}`
+          }); status = 503; return;
         }
 
         const body = await readJsonBody(req, 12_000);
