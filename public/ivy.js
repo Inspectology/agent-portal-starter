@@ -204,8 +204,11 @@ function renderActivity(body) {
             })
           });
           const action = body?.result?.action || 'processed';
-          if (action === 'review') {
-            reviewMessage.textContent = 'IVY still needs more information for this item.';
+          const resolved = body?.result?.exceptionResolved === true;
+          if (action === 'review' || !resolved) {
+            reviewMessage.textContent = action === 'review'
+              ? 'IVY still needs more information for this item.'
+              : 'The retry completed, but this item still needs review.';
           } else {
             completed = true;
             reviewMessage.textContent = '';
