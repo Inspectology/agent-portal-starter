@@ -73,36 +73,59 @@ async function updateExceptionStatus(accessToken, spreadsheetId, {
   const rows = await readRows(accessToken, id, "'Exceptions'!A2:J");
   const targetEmail = String(sourceEmailId || '');
   const targetFile = String(attachmentFilename || '').trim().toLowerCase();
+  const resolving = String(status || '').toLowerCase() === 'resolved';
 
-  const index = rows.findIndex(row => {
-    const emailId = String(row[4] || '');
-    const filename = String(row[5] || '').trim().toLowerCase();
-    return emailId === targetEmail && (!targetFile || filename === targetFile);
-  });
-
-  if (index < 0) return { updated: false };
-
-  const sheetRow = index + 2;
-  const range = "'Exceptions'!H" + sheetRow + ":J" + sheetRow;
-  const encodedId = encodeURIComponent(id);
-  const encodedRange = encodeURIComponent(range);
-  const url =
-    `https://sheets.googleapis.com/v4/spreadsheets/${encodedId}/values/${encodedRange}` +
-    '?valueInputOption=USER_ENTERED';
-
-  const resolvedAt = String(status || '').toLowerCase() === 'resolved'
-    ? new Date().toISOString()
-    : '';
-
-  await sheetsJson(accessToken, url, {
-    method: 'PUT',
-    body: JSON.stringify({
-      majorDimension: 'ROWS',
-      values: [[status, resolvedAt, resolutionNotes]]
+  let indexes = rows
+    .map((row, index) => ({ row, index }))
+    .filter(({ row }) => {
+      const emailId = String(row[4] || '');
+      const filename = String(row[5] || '').trim().toLowerCase();
+      const currentStatus = String(row[7] || '').trim().toLowerCase();
+      if (emailId !== targetEmail) return false;
+      if (resolving && currentStatus === 'resolved') return false;
+      return !targetFile || filename === targetFile;
     })
-  });
+    .map(({ index }) => index);
 
-  return { updated: true, row: sheetRow };
+  if (!indexes.length && resolving && targetEmail) {
+    indexes = rows
+      .map((row, index) => ({ row, index }))
+      .filter(({ row }) =>
+        String(row[4] || '') === targetEmail &&
+        String(row[7] || '').trim().toLowerCase() !== 'resolved'
+      )
+      .map(({ index }) => index);
+  }
+
+  if (!indexes.length) return { updated: false, updatedCount: 0, rows: [] };
+
+  const resolvedAt = resolving ? new Date().toISOString() : '';
+  const updatedRows = [];
+
+  for (const index of indexes) {
+    const sheetRow = index + 2;
+    const range = "'Exceptions'!H" + sheetRow + ":J" + sheetRow;
+    const encodedId = encodeURIComponent(id);
+    const encodedRange = encodeURIComponent(range);
+    const url =
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodedId}/values/${encodedRange}` +
+      '?valueInputOption=USER_ENTERED';
+
+    await sheetsJson(accessToken, url, {
+      method: 'PUT',
+      body: JSON.stringify({
+        majorDimension: 'ROWS',
+        values: [[status, resolvedAt, resolutionNotes]]
+      })
+    });
+    updatedRows.push(sheetRow);
+  }
+
+  return {
+    updated: true,
+    updatedCount: updatedRows.length,
+    rows: updatedRows
+  };
 }
 
 function vendorActivityRow(activity = {}) {
