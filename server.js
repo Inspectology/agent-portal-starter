@@ -2591,7 +2591,9 @@ function createPortal(options = {}) {
         notes: String(row[14] || '')
       }))
       .filter(item => item.receivedAt || item.vendor || item.status)
-      .filter(item => String(item.entryType || '').toLowerCase() !== 'ignored')
+      .filter(item => !['ignored', 'coordination'].includes(
+        String(item.entryType || '').toLowerCase()
+      ))
       .reverse();
 
     const exceptions = exceptionRows
@@ -2807,6 +2809,32 @@ function createPortal(options = {}) {
     const isAtlanticBlueYieldDisclaimer = (message.filenames || []).some(name =>
       /^well yield disclaimer\.pdf$/i.test(String(name || '').trim())
     );
+    const hasReportOrInvoiceAttachment = (message.attachments || []).some(item => {
+      const filename = String(item.filename || '').trim();
+      return /\.pdf$/i.test(filename) && !/^well yield disclaimer\.pdf$/i.test(filename);
+    });
+    const isBookingCoordination =
+      /^(?:re:\s*)?booking confirmation\b/i.test(String(message.subject || '').trim()) &&
+      !hasReportOrInvoiceAttachment;
+
+    if (isBookingCoordination) {
+      if (!existingKeys.has(defaultKey)) {
+        await appendVendorActivity(sheetsToken, config.operations, {
+          receivedAt: message.receivedAt,
+          entryType: 'Coordination',
+          vendor: '',
+          service: 'Vendor Coordination',
+          sourceEmailId: message.sourceEmailId,
+          attachmentFilename: defaultFilename,
+          status: 'No Action',
+          notes: 'Booking confirmation or reply with no actionable report/invoice attachment.'
+        });
+      }
+      return {
+        action: 'ignore',
+        reason: 'Vendor coordination message; no action required'
+      };
+    }
 
     if (isAtlanticBlueYieldDisclaimer) {
       if (!existingKeys.has(defaultKey)) {
