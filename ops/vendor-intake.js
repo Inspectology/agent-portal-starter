@@ -149,6 +149,7 @@ function sourceText(message = {}) {
     message.replyTo,
     message.subject,
     message.body,
+    message.attachmentText,
     ...(message.filenames || [])
   ].filter(Boolean).join('\n');
 }
@@ -319,9 +320,14 @@ function extractInvoiceData(text = '') {
 }
 
 function extractStreetCandidates(message = {}) {
-  const texts = [message.subject, message.body, ...(message.filenames || [])]
+  const texts = [
+    message.subject,
+    message.body,
+    message.attachmentText,
+    ...(message.filenames || [])
+  ]
     .filter(Boolean)
-    .map(String);
+    .map(value => String(value).replace(/\b(\d{1,6})(?=[A-Za-z])/g, '$1 '));
 
   const suffix = STREET_SUFFIXES.join('|');
   const pattern = new RegExp(
