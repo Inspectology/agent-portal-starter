@@ -3267,8 +3267,10 @@ function createPortal(options = {}) {
     );
 
     const successNote = ivyExceptionResolutionLabel(result);
+    let exceptionUpdate = { updated: false, updatedCount: 0 };
+
     if (successNote) {
-      await updateExceptionStatus(
+      exceptionUpdate = await updateExceptionStatus(
         sheetsToken,
         config.operations.spreadsheetId,
         {
@@ -3283,7 +3285,7 @@ function createPortal(options = {}) {
         }
       );
     } else {
-      await updateExceptionStatus(
+      exceptionUpdate = await updateExceptionStatus(
         sheetsToken,
         config.operations.spreadsheetId,
         {
@@ -3295,7 +3297,11 @@ function createPortal(options = {}) {
       );
     }
 
-    return result;
+    return {
+      ...result,
+      exceptionResolved: Boolean(successNote && exceptionUpdate.updated),
+      resolvedExceptionCount: successNote ? Number(exceptionUpdate.updatedCount || 0) : 0
+    };
   }
 
   async function handleRequest(req, res) {
