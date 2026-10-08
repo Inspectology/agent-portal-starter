@@ -117,6 +117,27 @@ function renderActivityList() {
   activityToggle.setAttribute('aria-expanded', String(activityExpanded));
 }
 
+function showExceptionSuccess(card, label) {
+  if (!card) return;
+  card.classList.add('ivy-card-success');
+
+  const banner = el('div', {
+    class: 'ivy-success-banner',
+    role: 'status',
+    'aria-live': 'polite'
+  }, [
+    el('span', { class: 'ivy-success-check', text: '✓' }),
+    el('strong', { text: label })
+  ]);
+
+  card.prepend(banner);
+  banner.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+  window.setTimeout(() => {
+    loadActivity().catch(() => {});
+  }, 2400);
+}
+
 function renderActivity(body) {
   latestActivity = Array.isArray(body.activity) ? body.activity : [];
   const exceptions = Array.isArray(body.exceptions) ? body.exceptions : [];
@@ -129,6 +150,7 @@ function renderActivity(body) {
     exceptionsList.append(el('div', { class: 'ivy-empty', text: 'Nothing needs attention.' }));
   } else {
     for (const item of exceptions) {
+      let exceptionCard = null;
       const vendorSelect = el('select', { class: 'ivy-review-input', 'aria-label': 'Correct vendor' }, [
         el('option', { value: '', text: 'Choose vendor if needed' }),
         el('option', { value: 'termite', text: 'Lynn Pest Management' }),
@@ -170,6 +192,7 @@ function renderActivity(body) {
         retryButton.disabled = true;
         resolveButton.disabled = true;
         reviewMessage.textContent = 'Retrying...';
+        let completed = false;
         try {
           const body = await api('/api/admin/ivy/exceptions/retry', {
             method: 'POST',
@@ -181,15 +204,20 @@ function renderActivity(body) {
             })
           });
           const action = body?.result?.action || 'processed';
-          reviewMessage.textContent = action === 'review'
-            ? 'IVY still needs more information for this item.'
-            : 'Corrected. IVY reprocessed this item successfully.';
-          await loadActivity();
+          if (action === 'review') {
+            reviewMessage.textContent = 'IVY still needs more information for this item.';
+          } else {
+            completed = true;
+            reviewMessage.textContent = '';
+            showExceptionSuccess(exceptionCard, 'Corrected');
+          }
         } catch (error) {
           reviewMessage.textContent = error.message;
         } finally {
-          retryButton.disabled = false;
-          resolveButton.disabled = false;
+          if (!completed) {
+            retryButton.disabled = false;
+            resolveButton.disabled = false;
+          }
         }
       });
 
@@ -198,6 +226,7 @@ function renderActivity(body) {
         resolveButton.disabled = true;
         retryButton.disabled = true;
         reviewMessage.textContent = 'Resolving...';
+        let completed = false;
         try {
           await api('/api/admin/ivy/exceptions/resolve', {
             method: 'POST',
@@ -207,12 +236,16 @@ function renderActivity(body) {
               note: 'Manually resolved from the IVY dashboard.'
             })
           });
-          await loadActivity();
+          completed = true;
+          reviewMessage.textContent = '';
+          showExceptionSuccess(exceptionCard, 'Resolved');
         } catch (error) {
           reviewMessage.textContent = error.message;
         } finally {
-          resolveButton.disabled = false;
-          retryButton.disabled = false;
+          if (!completed) {
+            resolveButton.disabled = false;
+            retryButton.disabled = false;
+          }
         }
       });
 
@@ -346,22 +379,21 @@ function renderActivity(body) {
         details.hidden = expanded;
       });
 
-      exceptionsList.append(
-        el('article', { class: 'ivy-card' }, [
-          el('div', { class: 'ivy-card-top' }, [
-            el('strong', { text: item.vendor || 'IVY exception' }),
-            el('span', {
-              class: 'ivy-status',
-              text: 'Status: ' + (item.status || 'Open'),
-              title: 'Status only'
-            })
-          ]),
-          el('p', { text: item.reason || 'Review needed' }),
-          el('p', { text: [item.propertyAddress, formatWhen(item.createdAt)].filter(Boolean).join(' · ') }),
-          detailsButton,
-          details
-        ])
-      );
+      exceptionCard = el('article', { class: 'ivy-card' }, [
+        el('div', { class: 'ivy-card-top' }, [
+          el('strong', { text: item.vendor || 'IVY exception' }),
+          el('span', {
+            class: 'ivy-status',
+            text: 'Status: ' + (item.status || 'Open'),
+            title: 'Status only'
+          })
+        ]),
+        el('p', { text: item.reason || 'Review needed' }),
+        el('p', { text: [item.propertyAddress, formatWhen(item.createdAt)].filter(Boolean).join(' · ') }),
+        detailsButton,
+        details
+      ]);
+      exceptionsList.append(exceptionCard);
     }
   }
 }
