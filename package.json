@@ -36,5 +36,8 @@
   "packageManager": "npm@10.9.7",
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "pdf-parse": "1.1.1"
   }
 }
