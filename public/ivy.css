@@ -176,6 +176,38 @@ h2 { font-size: 21px; margin: 3px 0 0; }
   padding: 14px;
   background: #fff;
 }
+.ivy-card-success {
+  border-color: #b9ddc8;
+  background: #f5fbf7;
+  transition: background .2s ease, border-color .2s ease;
+}
+.ivy-success-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: -2px 0 12px;
+  padding: 11px 12px;
+  border-radius: 13px;
+  background: #e8f6ed;
+  color: var(--good);
+  font-weight: 800;
+  animation: ivy-success-pop .18s ease-out;
+}
+.ivy-success-check {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  background: var(--good);
+  color: #fff;
+  font-size: 16px;
+  line-height: 1;
+}
+@keyframes ivy-success-pop {
+  from { opacity: 0; transform: translateY(-4px) scale(.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
 .ivy-card-top {
   display: flex;
   justify-content: space-between;
