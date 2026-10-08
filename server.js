@@ -2804,7 +2804,10 @@ function createPortal(options = {}) {
       includeExceptions: overrides.includeExceptions !== false
     });
 
-    const defaultFilename = message.filenames?.[0] || '';
+    const defaultFilename =
+      (message.attachments || []).find(item => /\.pdf$/i.test(String(item.filename || '')))?.filename ||
+      message.filenames?.[0] ||
+      '';
     const defaultKey = ivyLedgerKey(message.sourceEmailId, defaultFilename);
     const isAtlanticBlueYieldDisclaimer = (message.filenames || []).some(name =>
       /^well yield disclaimer\.pdf$/i.test(String(name || '').trim())
