@@ -2700,6 +2700,13 @@ function createPortal(options = {}) {
     );
   }
 
+  function ivyNormalizeAddressSpacing(value) {
+    return String(value || '')
+      .replace(/\b(\d{1,6})(?=[A-Za-z])/g, '$1 ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
   function ivyAddressToken(value) {
     return String(value || '')
       .toLowerCase()
@@ -2715,7 +2722,9 @@ function createPortal(options = {}) {
       "'Vendor Activity'!A2:O"
     );
     const receivedAt = Date.parse(message.receivedAt || '');
-    const hint = ivyAddressToken(facts.propertyAddress || facts.projectName || '');
+    const hint = ivyAddressToken(
+      ivyNormalizeAddressSpacing(facts.propertyAddress || facts.projectName || '')
+    );
     const hintNumber = hint.match(/^\d{1,6}\b/)?.[0] || '';
 
     const candidates = rows
@@ -2857,8 +2866,8 @@ function createPortal(options = {}) {
 
       if (pdfFacts && !pdfFacts.error) {
         message.body = [
-          pdfFacts.propertyAddress,
-          pdfFacts.projectName,
+          ivyNormalizeAddressSpacing(pdfFacts.propertyAddress),
+          ivyNormalizeAddressSpacing(pdfFacts.projectName),
           pdfFacts.reportType,
           message.body
         ].filter(Boolean).join('\n');
