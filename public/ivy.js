@@ -22,6 +22,10 @@ const exceptionCount = document.getElementById('exceptionCount');
 const voiceButton = document.getElementById('voiceButton');
 const voiceStatus = document.getElementById('voiceStatus');
 const installButton = document.getElementById('installButton');
+const inboxReviewList = document.getElementById('inboxReviewList');
+const inboxReviewMessage = document.getElementById('inboxReviewMessage');
+const inboxActionCount = document.getElementById('inboxActionCount');
+const inboxRefreshButton = document.getElementById('inboxRefreshButton');
 
 let pendingChallenge = sessionStorage.getItem('ivyAdminChallenge') || '';
 let pendingEmail = sessionStorage.getItem('ivyAdminEmail') || '';
@@ -406,6 +410,126 @@ async function loadActivity() {
   renderActivity(body);
 }
 
+function formatConfidence(value) {
+  const n = Number(value || 0);
+  return Math.round(Math.max(0, Math.min(1, n)) * 100) + '%';
+}
+
+function renderInboxReview(items) {
+  const rows = Array.isArray(items) ? items : [];
+  inboxReviewList.replaceChildren();
+
+  const sorted = [...rows].sort((a, b) => {
+    if (Boolean(a.actionNeeded) !== Boolean(b.actionNeeded)) return a.actionNeeded ? -1 : 1;
+    return String(b.receivedAt || '').localeCompare(String(a.receivedAt || ''));
+  });
+
+  inboxActionCount.textContent = String(sorted.filter(item => item.actionNeeded).length);
+
+  if (!sorted.length) {
+    inboxReviewList.append(
+      el('div', { class: 'ivy-empty', text: 'No recent inbox threads to review.' })
+    );
+    return;
+  }
+
+  for (const item of sorted.slice(0, 12)) {
+    const badgeText = item.actionNeeded ? 'Action needed' : 'No action';
+    const badgeClass = item.actionNeeded ? 'ivy-inbox-badge ivy-inbox-badge-action' : 'ivy-inbox-badge';
+
+    const suggestion = el('div', { class: 'ivy-inbox-suggestion' });
+    suggestion.hidden = true;
+
+    if (item.suggestedReply) {
+      const replyText = el('div', { class: 'ivy-inbox-reply', text: item.suggestedReply });
+      const copyButton = el('button', {
+        type: 'button',
+        class: 'ivy-mini-button',
+        text: 'Copy suggestion'
+      });
+      copyButton.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(item.suggestedReply);
+          copyButton.textContent = 'Copied';
+          window.setTimeout(() => { copyButton.textContent = 'Copy suggestion'; }, 1800);
+        } catch {
+          copyButton.textContent = 'Copy unavailable';
+        }
+      });
+      suggestion.append(
+        el('span', { class: 'ivy-review-label', text: 'Suggested reply' }),
+        replyText,
+        copyButton
+      );
+    } else {
+      suggestion.append(
+        el('div', { class: 'ivy-muted', text: 'IVY does not recommend a reply for this thread.' })
+      );
+    }
+
+    const toggle = el('button', {
+      type: 'button',
+      class: 'ivy-details-button',
+      text: item.suggestedReply ? 'Show recommendation' : 'Show reasoning',
+      'aria-expanded': 'false'
+    });
+
+    toggle.addEventListener('click', () => {
+      const open = toggle.getAttribute('aria-expanded') === 'true';
+      toggle.setAttribute('aria-expanded', String(!open));
+      toggle.textContent = open
+        ? (item.suggestedReply ? 'Show recommendation' : 'Show reasoning')
+        : 'Hide recommendation';
+      suggestion.hidden = open;
+    });
+
+    suggestion.append(
+      el('p', {
+        class: 'ivy-inbox-rationale',
+        text: [
+          item.rationale ? 'Why: ' + item.rationale : '',
+          'Confidence: ' + formatConfidence(item.confidence)
+        ].filter(Boolean).join(' · ')
+      })
+    );
+
+    inboxReviewList.append(
+      el('article', { class: 'ivy-card ivy-inbox-card' }, [
+        el('div', { class: 'ivy-card-top' }, [
+          el('strong', { text: item.subject || '(no subject)' }),
+          el('span', { class: badgeClass, text: badgeText })
+        ]),
+        el('p', { text: [item.from, formatWhen(item.receivedAt)].filter(Boolean).join(' · ') }),
+        el('p', { class: 'ivy-inbox-category', text: item.category || 'Other' }),
+        el('p', { text: item.summary || 'No summary available.' }),
+        item.alreadyReplied
+          ? el('p', { class: 'ivy-inbox-note', text: 'Inspectology is currently the latest sender in this thread.' })
+          : null,
+        toggle,
+        suggestion
+      ].filter(Boolean))
+    );
+  }
+}
+
+async function loadInboxReview() {
+  inboxReviewMessage.textContent = 'IVY is reviewing the inbox...';
+  inboxRefreshButton.disabled = true;
+  try {
+    const body = await api('/api/admin/ivy/inbox-review');
+    renderInboxReview(body.items || []);
+    inboxReviewMessage.textContent = body.readOnly
+      ? 'Shadow Mode is read-only. No emails were changed or sent.'
+      : '';
+  } catch (error) {
+    inboxReviewList.replaceChildren();
+    inboxActionCount.textContent = '0';
+    inboxReviewMessage.textContent = 'Inbox Review unavailable: ' + error.message;
+  } finally {
+    inboxRefreshButton.disabled = false;
+  }
+}
+
 function addBubble(text, kind) {
   conversation.append(
     el('div', { class: 'ivy-bubble ivy-bubble-' + kind, text })
@@ -455,6 +579,8 @@ codeForm.addEventListener('submit', async event => {
     const session = await api('/api/admin/session');
     showApp(session);
     await loadActivity();
+    loadInboxReview().catch(() => {});
+    loadInboxReview().catch(() => {});
   } catch (error) {
     loginMessage.textContent = error.message;
   }
@@ -478,8 +604,15 @@ signOut.addEventListener('click', async () => {
 
 refreshButton.addEventListener('click', async () => {
   refreshButton.disabled = true;
-  try { await loadActivity(); }
-  finally { refreshButton.disabled = false; }
+  try {
+    await Promise.all([loadActivity(), loadInboxReview()]);
+  } finally {
+    refreshButton.disabled = false;
+  }
+});
+
+inboxRefreshButton.addEventListener('click', async () => {
+  await loadInboxReview();
 });
 
 activityToggle.addEventListener('click', () => {
@@ -551,6 +684,7 @@ if ('serviceWorker' in navigator) {
     const session = await api('/api/admin/session');
     showApp(session);
     await loadActivity();
+    loadInboxReview().catch(() => {});
   } catch {
     showLogin();
   }
