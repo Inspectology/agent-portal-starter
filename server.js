@@ -195,7 +195,8 @@ function createConfig(env = process.env) {
       poolId: String(env.GOOGLE_WORKLOAD_IDENTITY_POOL_ID || '').trim(),
       providerId: String(env.GOOGLE_WORKLOAD_IDENTITY_PROVIDER_ID || '').trim(),
       serviceAccountEmail: String(env.GOOGLE_DRIVE_SERVICE_ACCOUNT_EMAIL || '').trim(),
-      backupFolderId: String(env.GOOGLE_DRIVE_BACKUP_FOLDER_ID || '').trim()
+      backupFolderId: String(env.GOOGLE_DRIVE_BACKUP_FOLDER_ID || '').trim(),
+      gmailUser: String(env.IVY_GMAIL_USER || 'info@inspect-ology.com').trim().toLowerCase()
     },
     deploymentEnvironment: String(env.VERCEL_TARGET_ENV || env.VERCEL_ENV || '').trim().toLowerCase(),
     publicOrigin: validatedOrigin(
@@ -695,6 +696,365 @@ function googleSheetsAccessToken(config, runtimeOidcToken = '') {
   return googleWorkspaceAccessToken(config, runtimeOidcToken, [
     'https://www.googleapis.com/auth/spreadsheets'
   ]);
+}
+
+async function googleDelegatedGmailAccessToken(config, runtimeOidcToken = '', userEmail = '') {
+  const drive = config.googleDrive || {};
+  const oidcToken = String(runtimeOidcToken || process.env.VERCEL_OIDC_TOKEN || '').trim();
+  const delegatedUser = String(userEmail || drive.gmailUser || 'info@inspect-ology.com').trim().toLowerCase();
+
+  const missing = [
+    ['GOOGLE_CLOUD_PROJECT_NUMBER', drive.projectNumber],
+    ['GOOGLE_WORKLOAD_IDENTITY_POOL_ID', drive.poolId],
+    ['GOOGLE_WORKLOAD_IDENTITY_PROVIDER_ID', drive.providerId],
+    ['GOOGLE_DRIVE_SERVICE_ACCOUNT_EMAIL', drive.serviceAccountEmail]
+  ].filter(([, value]) => !value).map(([name]) => name);
+
+  if (missing.length) {
+    throw authError(`Google Workspace identity is missing: ${missing.join(', ')}`, 503);
+  }
+  if (!oidcToken) throw authError('Vercel OIDC token is unavailable in this deployment', 503);
+  if (!delegatedUser) throw authError('IVY Gmail mailbox is not configured', 503);
+
+  const audience = `//iam.googleapis.com/projects/${drive.projectNumber}/locations/global/workloadIdentityPools/${drive.poolId}/providers/${drive.providerId}`;
+  const exchangeForm = new URLSearchParams({
+    grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
+    audience,
+    scope: 'https://www.googleapis.com/auth/cloud-platform',
+    requested_token_type: 'urn:ietf:params:oauth:token-type:access_token',
+    subject_token: oidcToken,
+    subject_token_type: 'urn:ietf:params:oauth:token-type:jwt'
+  }).toString();
+
+  const exchange = await requestJson(
+    'https://sts.googleapis.com/v1/token',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(exchangeForm)
+      },
+      timeout: 15_000
+    },
+    exchangeForm,
+    300_000
+  );
+
+  if (exchange.statusCode < 200 || exchange.statusCode > 299 || !exchange.json?.access_token) {
+    const message = exchange.json?.error_description || exchange.json?.error ||
+      `Google STS returned HTTP ${exchange.statusCode}`;
+    throw new Error(message);
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const claims = {
+    iss: drive.serviceAccountEmail,
+    sub: delegatedUser,
+    scope: 'https://www.googleapis.com/auth/gmail.readonly',
+    aud: 'https://oauth2.googleapis.com/token',
+    iat: now,
+    exp: now + 3600
+  };
+  const signBody = JSON.stringify({ payload: JSON.stringify(claims) });
+  const serviceAccount = encodeURIComponent(drive.serviceAccountEmail);
+  const signUrl =
+    `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${serviceAccount}:signJwt`;
+
+  const signed = await requestJson(
+    signUrl,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${exchange.json.access_token}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(signBody)
+      },
+      timeout: 15_000
+    },
+    signBody,
+    500_000
+  );
+
+  if (signed.statusCode < 200 || signed.statusCode > 299 || !signed.json?.signedJwt) {
+    const message = signed.json?.error?.message || `Google IAM signJwt returned HTTP ${signed.statusCode}`;
+    throw new Error(message);
+  }
+
+  const tokenForm = new URLSearchParams({
+    grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+    assertion: signed.json.signedJwt
+  }).toString();
+
+  const delegated = await requestJson(
+    'https://oauth2.googleapis.com/token',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(tokenForm)
+      },
+      timeout: 15_000
+    },
+    tokenForm,
+    500_000
+  );
+
+  if (delegated.statusCode < 200 || delegated.statusCode > 299 || !delegated.json?.access_token) {
+    const message = delegated.json?.error_description || delegated.json?.error ||
+      `Google delegated Gmail token returned HTTP ${delegated.statusCode}`;
+    throw new Error(message);
+  }
+
+  return delegated.json.access_token;
+}
+
+async function gmailApiJson(accessToken, pathname, params = {}) {
+  const url = new URL('https://gmail.googleapis.com/gmail/v1/users/me/' + pathname);
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === '') continue;
+    if (Array.isArray(value)) {
+      for (const item of value) url.searchParams.append(key, String(item));
+    } else {
+      url.searchParams.set(key, String(value));
+    }
+  }
+  const response = await requestJson(
+    url,
+    {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json'
+      },
+      timeout: 20_000
+    },
+    null,
+    2_000_000
+  );
+  if (response.statusCode < 200 || response.statusCode > 299 || !response.json) {
+    const message = response.json?.error?.message || `Gmail API returned HTTP ${response.statusCode}`;
+    throw new Error(message);
+  }
+  return response.json;
+}
+
+function gmailHeader(headers = [], name = '') {
+  const target = String(name || '').toLowerCase();
+  const item = (headers || []).find(entry => String(entry?.name || '').toLowerCase() === target);
+  return String(item?.value || '');
+}
+
+function gmailDecodeBase64Url(value = '') {
+  const text = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
+  if (!text) return '';
+  try {
+    return Buffer.from(text, 'base64').toString('utf8');
+  } catch {
+    return '';
+  }
+}
+
+function gmailPlainText(payload = {}) {
+  if (!payload || typeof payload !== 'object') return '';
+  if (/^text\/plain/i.test(String(payload.mimeType || '')) && payload.body?.data) {
+    return gmailDecodeBase64Url(payload.body.data);
+  }
+
+  const parts = Array.isArray(payload.parts) ? payload.parts : [];
+  for (const part of parts) {
+    const text = gmailPlainText(part);
+    if (text) return text;
+  }
+
+  if (payload.body?.data && !parts.length) {
+    const decoded = gmailDecodeBase64Url(payload.body.data);
+    if (decoded && !/<html[\s>]/i.test(decoded)) return decoded;
+  }
+  return '';
+}
+
+function gmailMessageSummary(message = {}, mailbox = '') {
+  const payload = message.payload || {};
+  const headers = payload.headers || [];
+  const from = gmailHeader(headers, 'From');
+  const to = gmailHeader(headers, 'To');
+  const subject = gmailHeader(headers, 'Subject');
+  const date = gmailHeader(headers, 'Date');
+  const body = gmailPlainText(payload)
+    .replace(/\r\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+    .slice(0, 6000);
+  const mailboxLower = String(mailbox || '').toLowerCase();
+  const fromLower = from.toLowerCase();
+
+  return {
+    id: String(message.id || ''),
+    threadId: String(message.threadId || ''),
+    internalDate: Number(message.internalDate || 0),
+    from,
+    to,
+    subject,
+    date,
+    body,
+    snippet: String(message.snippet || '').slice(0, 1200),
+    fromInspectology: Boolean(mailboxLower && fromLower.includes(mailboxLower)),
+    labelIds: Array.isArray(message.labelIds) ? message.labelIds : []
+  };
+}
+
+async function ivyGmailThreads(config, runtimeOidcToken = '', options = {}) {
+  const mailbox = String(config.googleDrive?.gmailUser || 'info@inspect-ology.com').trim().toLowerCase();
+  const token = await googleDelegatedGmailAccessToken(config, runtimeOidcToken, mailbox);
+  const maxResults = Math.max(1, Math.min(Number(options.maxResults || 15), 25));
+  const list = await gmailApiJson(token, 'threads', {
+    q: String(options.query || 'in:inbox newer_than:7d -in:spam -in:trash'),
+    maxResults
+  });
+
+  const threadRefs = Array.isArray(list.threads) ? list.threads.slice(0, maxResults) : [];
+  const threads = [];
+  for (let index = 0; index < threadRefs.length; index += 5) {
+    const batch = threadRefs.slice(index, index + 5);
+    const results = await Promise.all(batch.map(ref =>
+      gmailApiJson(token, 'threads/' + encodeURIComponent(ref.id), { format: 'full' })
+    ));
+    for (const thread of results) {
+      const messages = (Array.isArray(thread.messages) ? thread.messages : [])
+        .map(item => gmailMessageSummary(item, mailbox))
+        .sort((a, b) => a.internalDate - b.internalDate);
+      const latest = messages[messages.length - 1] || null;
+      if (!latest) continue;
+      threads.push({
+        id: String(thread.id || ''),
+        messages,
+        latest,
+        alreadyReplied: Boolean(latest.fromInspectology),
+        messageCount: messages.length
+      });
+    }
+  }
+
+  return {
+    mailbox,
+    threads: threads.sort((a, b) =>
+      Number(b.latest?.internalDate || 0) - Number(a.latest?.internalDate || 0)
+    )
+  };
+}
+
+async function ivyAnalyzeInboxThreads(config, gmailData) {
+  if (!config.ai.apiKey) throw authError('IVY AI is not configured yet', 503);
+
+  const compactThreads = (gmailData.threads || []).slice(0, 15).map(thread => {
+    const latest = thread.latest || {};
+    const previousOutbound = [...(thread.messages || [])].reverse()
+      .find(message => message.fromInspectology);
+    return {
+      threadId: thread.id,
+      subject: latest.subject,
+      from: latest.from,
+      date: latest.date,
+      latestBody: latest.body || latest.snippet,
+      alreadyReplied: thread.alreadyReplied,
+      messageCount: thread.messageCount,
+      previousInspectologyReply: previousOutbound
+        ? (previousOutbound.body || previousOutbound.snippet).slice(0, 2200)
+        : ''
+    };
+  });
+
+  const instructions = [
+    'You are IVY, Inspectology Virtual Operations Assistant, operating in Gmail Shadow Mode.',
+    'Analyze inbox threads only. You cannot send, modify, archive, label, delete, or otherwise change Gmail.',
+    'Return one JSON array only, with no markdown or commentary.',
+    'Return one object for each supplied thread, preserving threadId.',
+    'Use keys exactly: threadId, category, actionNeeded, priority, summary, suggestedReply, confidence, rationale.',
+    'Allowed category values: Scheduling / Access, Cancellation, Payment / Billing, Quote / Availability, Vendor Coordination, Vendor Document, Client / Agent Question, Complaint / Issue, System Notification, Marketing / Junk, Other.',
+    'actionNeeded must be true only when Inspectology staff should reasonably do something based on the latest message.',
+    'If alreadyReplied is true and the latest message is from Inspectology, actionNeeded should normally be false.',
+    'Vendor reports, invoices, booking confirmations, automated vendor notices, system notifications, marketing, and junk normally do not need an administrative reply.',
+    'For cancellations, complaints, refunds, legal issues, inspection findings, pricing exceptions, or ambiguous situations: never recommend auto-send. Provide a cautious suggestedReply only if a staff-reviewed reply would help.',
+    'suggestedReply must be an empty string when no reply is needed.',
+    'Do not invent policies, prices, availability, appointment times, inspection findings, payment methods, or facts not present in the supplied thread.',
+    'Use confidence as a number from 0 to 1.',
+    'Keep summary and rationale concise.'
+  ].join(' ');
+
+  const body = JSON.stringify({
+    model: config.ai.model,
+    store: false,
+    max_output_tokens: 2600,
+    instructions,
+    input: [{
+      role: 'user',
+      content: [{
+        type: 'input_text',
+        text: JSON.stringify({
+          mailbox: gmailData.mailbox,
+          threads: compactThreads
+        })
+      }]
+    }]
+  });
+
+  const response = await requestJson(
+    'https://api.openai.com/v1/responses',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.ai.apiKey}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body)
+      },
+      timeout: 45_000
+    },
+    body,
+    2_000_000
+  );
+
+  if (response.statusCode < 200 || response.statusCode > 299 || !response.json) {
+    const message = response.json?.error?.message || `OpenAI returned HTTP ${response.statusCode}`;
+    throw new Error(message);
+  }
+
+  const output = openAiOutputText(response.json).trim();
+  const arrayText = output.match(/\[[\s\S]*\]/)?.[0] || '';
+  if (!arrayText) throw new Error('IVY inbox analysis returned no JSON array');
+
+  let analysis;
+  try {
+    analysis = JSON.parse(arrayText);
+  } catch {
+    throw new Error('IVY inbox analysis returned invalid JSON');
+  }
+
+  const byThread = new Map(
+    (Array.isArray(analysis) ? analysis : [])
+      .filter(item => item && item.threadId)
+      .map(item => [String(item.threadId), item])
+  );
+
+  return (gmailData.threads || []).map(thread => {
+    const item = byThread.get(thread.id) || {};
+    const latest = thread.latest || {};
+    return {
+      threadId: thread.id,
+      messageId: latest.id || '',
+      from: latest.from || '',
+      subject: latest.subject || '',
+      receivedAt: latest.internalDate ? new Date(latest.internalDate).toISOString() : '',
+      category: String(item.category || 'Other'),
+      actionNeeded: Boolean(item.actionNeeded),
+      priority: String(item.priority || 'Normal'),
+      summary: String(item.summary || latest.snippet || '').slice(0, 1200),
+      suggestedReply: String(item.suggestedReply || '').slice(0, 4000),
+      confidence: Math.max(0, Math.min(1, Number(item.confidence || 0))),
+      rationale: String(item.rationale || '').slice(0, 1200),
+      alreadyReplied: Boolean(thread.alreadyReplied),
+      messageCount: thread.messageCount
+    };
+  });
 }
 
 async function googleDriveListChildren(accessToken, parentId) {
@@ -3866,6 +4226,24 @@ function createPortal(options = {}) {
           status = 200;
           return;
         }
+        if (req.method === 'GET' && pathname === '/api/admin/ivy/inbox-review') {
+          const gmailData = await ivyGmailThreads(
+            config,
+            String(req.headers['x-vercel-oidc-token'] || ''),
+            { maxResults: 15 }
+          );
+          const review = await ivyAnalyzeInboxThreads(config, gmailData);
+          sendJson(res, 200, {
+            status: 'ok',
+            mode: 'shadow',
+            mailbox: gmailData.mailbox,
+            readOnly: true,
+            items: review
+          });
+          status = 200;
+          return;
+        }
+
         if (req.method === 'GET' && pathname === '/api/admin/ivy/payables') {
           const start = ivyPayablesDate(url.searchParams.get('start'));
           const end = ivyPayablesDate(url.searchParams.get('end'));
