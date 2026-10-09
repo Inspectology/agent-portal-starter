@@ -580,7 +580,6 @@ codeForm.addEventListener('submit', async event => {
     showApp(session);
     await loadActivity();
     loadInboxReview().catch(() => {});
-    loadInboxReview().catch(() => {});
   } catch (error) {
     loginMessage.textContent = error.message;
   }
