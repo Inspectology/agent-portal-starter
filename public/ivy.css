@@ -348,14 +348,32 @@ h2 { font-size: 21px; margin: 3px 0 0; }
 }
 .ivy-inbox-section {
   border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
-  margin-bottom: 10px;
-  padding-top: 20px;
+  margin-top: 4px;
+  padding-top: 18px;
 }
 .ivy-inbox-heading-actions {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+.ivy-inbox-summary-heading {
+  align-items: center;
+  margin-bottom: 8px;
+}
+.ivy-inbox-summary {
+  margin: 4px 0 0;
+  font-size: 13px;
+}
+.ivy-inbox-compact-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.ivy-inbox-toggle {
+  width: auto;
+  margin-top: 0;
+  flex: 1;
 }
 .ivy-section-note {
   margin: -2px 0 12px;
