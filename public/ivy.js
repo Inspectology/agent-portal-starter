@@ -25,6 +25,8 @@ const installButton = document.getElementById('installButton');
 const inboxReviewList = document.getElementById('inboxReviewList');
 const inboxReviewMessage = document.getElementById('inboxReviewMessage');
 const inboxActionCount = document.getElementById('inboxActionCount');
+const inboxSummary = document.getElementById('inboxSummary');
+const inboxToggle = document.getElementById('inboxToggle');
 const inboxRefreshButton = document.getElementById('inboxRefreshButton');
 
 let pendingChallenge = sessionStorage.getItem('ivyAdminChallenge') || '';
@@ -32,6 +34,8 @@ let pendingEmail = sessionStorage.getItem('ivyAdminEmail') || '';
 let installPrompt = null;
 let latestActivity = [];
 let activityExpanded = false;
+let latestInboxReview = [];
+let inboxExpanded = false;
 const ACTIVITY_PREVIEW_COUNT = 5;
 
 function el(tag, attrs = {}, children = []) {
@@ -417,14 +421,25 @@ function formatConfidence(value) {
 
 function renderInboxReview(items) {
   const rows = Array.isArray(items) ? items : [];
-  inboxReviewList.replaceChildren();
+  latestInboxReview = rows;
 
   const sorted = [...rows].sort((a, b) => {
     if (Boolean(a.actionNeeded) !== Boolean(b.actionNeeded)) return a.actionNeeded ? -1 : 1;
     return String(b.receivedAt || '').localeCompare(String(a.receivedAt || ''));
   });
 
-  inboxActionCount.textContent = String(sorted.filter(item => item.actionNeeded).length);
+  const actionCount = sorted.filter(item => item.actionNeeded).length;
+  inboxActionCount.textContent = String(actionCount);
+  inboxSummary.textContent = sorted.length
+    ? actionCount + ' need attention · ' + sorted.length + ' reviewed'
+    : 'No recent inbox threads to review.';
+
+  inboxReviewList.replaceChildren();
+  inboxReviewList.hidden = !inboxExpanded;
+  inboxToggle.textContent = inboxExpanded ? 'Hide inbox review' : 'Review inbox';
+  inboxToggle.setAttribute('aria-expanded', String(inboxExpanded));
+
+  if (!inboxExpanded) return;
 
   if (!sorted.length) {
     inboxReviewList.append(
@@ -522,8 +537,11 @@ async function loadInboxReview() {
       ? 'Shadow Mode is read-only. No emails were changed or sent.'
       : '';
   } catch (error) {
+    latestInboxReview = [];
     inboxReviewList.replaceChildren();
+    inboxReviewList.hidden = true;
     inboxActionCount.textContent = '0';
+    inboxSummary.textContent = 'Inbox review unavailable.';
     inboxReviewMessage.textContent = 'Inbox Review unavailable: ' + error.message;
   } finally {
     inboxRefreshButton.disabled = false;
@@ -612,6 +630,11 @@ refreshButton.addEventListener('click', async () => {
 
 inboxRefreshButton.addEventListener('click', async () => {
   await loadInboxReview();
+});
+
+inboxToggle.addEventListener('click', () => {
+  inboxExpanded = !inboxExpanded;
+  renderInboxReview(latestInboxReview);
 });
 
 activityToggle.addEventListener('click', () => {
