@@ -4227,12 +4227,28 @@ function createPortal(options = {}) {
           return;
         }
         if (req.method === 'GET' && pathname === '/api/admin/ivy/inbox-review') {
-          const gmailData = await ivyGmailThreads(
-            config,
-            String(req.headers['x-vercel-oidc-token'] || ''),
-            { maxResults: 15 }
-          );
-          const review = await ivyAnalyzeInboxThreads(config, gmailData);
+          let gmailData;
+          try {
+            gmailData = await ivyGmailThreads(
+              config,
+              String(req.headers['x-vercel-oidc-token'] || ''),
+              { maxResults: 15 }
+            );
+          } catch (error) {
+            error.safeDetail = 'Gmail Shadow Mode authentication/read failed: ' +
+              String(error?.message || error || 'Unknown Google error').slice(0, 700);
+            throw error;
+          }
+
+          let review;
+          try {
+            review = await ivyAnalyzeInboxThreads(config, gmailData);
+          } catch (error) {
+            error.safeDetail = 'Gmail was read successfully, but IVY inbox analysis failed: ' +
+              String(error?.message || error || 'Unknown analysis error').slice(0, 700);
+            throw error;
+          }
+
           sendJson(res, 200, {
             status: 'ok',
             mode: 'shadow',
