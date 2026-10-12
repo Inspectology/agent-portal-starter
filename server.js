@@ -6,6 +6,12 @@ const fs = require('node:fs');
 const http = require('node:http');
 const https = require('node:https');
 const path = require('node:path');
+const {
+  appendWeeklySummary,
+  readRows
+} = require('./ops/google-sheets-ledger');
+const { sendIvyEmail } = require('./ops/ivy-email');
+const { buildVendorPayablesReport } = require('./ops/vendor-payables');
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -139,6 +145,16 @@ function createConfig(env = process.env) {
       resendApiKey: String(env.RESEND_API_KEY || '').trim(),
       to: String(env.PROFILE_CHANGE_EMAIL_TO || '').trim(),
       from: String(env.PROFILE_CHANGE_EMAIL_FROM || '').trim()
+    },
+    operations: {
+      resendApiKey: String(env.OPS_RESEND_API_KEY || env.RESEND_API_KEY || '').trim(),
+      spreadsheetId: String(
+        env.OPS_SPREADSHEET_ID ||
+        '15zah4PYh510csoKw2BkH5p88eZmhh7qFsG1AxxdimVQ'
+      ).trim(),
+      payablesEmailTo: String(env.OPS_PAYABLES_EMAIL_TO || 'info@inspect-ology.com').trim().toLowerCase(),
+      payablesAnchorMonday: String(env.OPS_PAYABLES_ANCHOR_MONDAY || '2026-09-28').trim(),
+      cronSecret: String(env.CRON_SECRET || '').trim()
     },
     googleDrive: {
       projectNumber: String(env.GOOGLE_CLOUD_PROJECT_NUMBER || '').trim(),
@@ -531,7 +547,9 @@ function requestJson(url, options = {}, body = null, maxBytes = 2_000_000) {
   });
 }
 
-async function googleDriveAccessToken(config, runtimeOidcToken = '') {
+async function googleWorkspaceAccessToken(config, runtimeOidcToken = '', scopes = [
+  'https://www.googleapis.com/auth/drive.readonly'
+]) {
   const drive = config.googleDrive || {};
   const oidcToken = String(runtimeOidcToken || process.env.VERCEL_OIDC_TOKEN || '').trim();
 
@@ -580,7 +598,7 @@ async function googleDriveAccessToken(config, runtimeOidcToken = '') {
   }
 
   const impersonationBody = JSON.stringify({
-    scope: ['https://www.googleapis.com/auth/drive.readonly'],
+    scope: scopes,
     lifetime: '3600s'
   });
   const serviceAccount = encodeURIComponent(drive.serviceAccountEmail);
@@ -612,6 +630,18 @@ async function googleDriveAccessToken(config, runtimeOidcToken = '') {
   }
 
   return impersonation.json.accessToken;
+}
+
+function googleDriveAccessToken(config, runtimeOidcToken = '') {
+  return googleWorkspaceAccessToken(config, runtimeOidcToken, [
+    'https://www.googleapis.com/auth/drive.readonly'
+  ]);
+}
+
+function googleSheetsAccessToken(config, runtimeOidcToken = '') {
+  return googleWorkspaceAccessToken(config, runtimeOidcToken, [
+    'https://www.googleapis.com/auth/spreadsheets'
+  ]);
 }
 
 async function googleDriveListChildren(accessToken, parentId) {
@@ -1787,6 +1817,335 @@ function createPortal(options = {}) {
     throw lastError;
   }
 
+  function ivyPayablesDate(value) {
+    const text = String(value || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return '';
+    const parsed = Date.parse(text + 'T12:00:00Z');
+    return Number.isFinite(parsed) ? text : '';
+  }
+
+  function ivyPayablesDateAdd(value, days) {
+    const clean = ivyPayablesDate(value);
+    if (!clean) return '';
+    const date = new Date(clean + 'T12:00:00Z');
+    date.setUTCDate(date.getUTCDate() + Number(days || 0));
+    return date.toISOString().slice(0, 10);
+  }
+
+  function ivyEasternOffset(dateOnly) {
+    const clean = ivyPayablesDate(dateOnly);
+    if (!clean) return '-04:00';
+    const probe = new Date(clean + 'T12:00:00Z');
+    const label = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      timeZoneName: 'shortOffset',
+      hour: '2-digit'
+    }).formatToParts(probe).find(part => part.type === 'timeZoneName')?.value || 'GMT-4';
+    const match = label.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?/i);
+    if (!match) return '-04:00';
+    return (match[1] === '-' ? '-' : '+') +
+      String(Number(match[2])).padStart(2, '0') + ':' +
+      String(Number(match[3] || 0)).padStart(2, '0');
+  }
+
+  async function ivySpectoraInspectionsForRange(start, end) {
+    const cleanStart = ivyPayablesDate(start);
+    const cleanEnd = ivyPayablesDate(end);
+    if (!cleanStart || !cleanEnd || cleanStart > cleanEnd) {
+      throw authError('A valid vendor payables date range is required', 400);
+    }
+
+    const startIso = cleanStart + 'T00:00:00' + ivyEasternOffset(cleanStart);
+    const endIso = cleanEnd + 'T23:59:59' + ivyEasternOffset(cleanEnd);
+    const records = [];
+
+    for (let page = 1; page <= 10; page += 1) {
+      const response = await fetchUpstream('Vendor payables inspection lookup', query('/v2/inspections', {
+        'filter[datetime_greater_than]': startIso,
+        'filter[datetime_less_than]': endIso,
+        'filter[include_canceled]': 'true',
+        'page[number]': String(page),
+        'page[size]': '200',
+        sort: 'datetime'
+      }));
+      const data = Array.isArray(response?.data) ? response.data : [];
+      records.push(...data);
+      const pagination = response?.meta?.pagination || {};
+      if (!pagination.next || data.length < 200) break;
+    }
+
+    return records;
+  }
+
+  async function ivyAllVendorActivity(sheetsToken) {
+    const rows = await readRows(
+      sheetsToken,
+      config.operations.spreadsheetId,
+      "'Vendor Activity'!A2:O"
+    );
+    return rows.map(row => ({
+      receivedAt: String(row[0] || ''),
+      entryType: String(row[1] || ''),
+      vendor: String(row[2] || ''),
+      service: String(row[3] || ''),
+      propertyAddress: String(row[4] || ''),
+      spectoraInspectionId: String(row[5] || ''),
+      inspectionDate: String(row[6] || ''),
+      sourceEmailId: String(row[7] || ''),
+      attachmentFilename: String(row[8] || ''),
+      vendorCost: row[9] === '' || row[9] == null ? null : Number(row[9]),
+      invoiceNumber: String(row[10] || ''),
+      status: String(row[11] || ''),
+      spectoraAttachmentId: String(row[12] || ''),
+      uploadedAt: String(row[13] || ''),
+      notes: String(row[14] || '')
+    })).filter(item => item.receivedAt || item.vendor || item.status);
+  }
+
+  async function ivyAttachmentsForPayables(inspections) {
+    const relevant = inspections;
+    const result = {};
+
+    for (let index = 0; index < relevant.length; index += 8) {
+      const batch = relevant.slice(index, index + 8);
+      const fetched = await Promise.all(batch.map(async inspection => {
+        const response = await fetchUpstream(
+          'Vendor payables attachment lookup',
+          query('/v2/inspection_attachments', {
+            'filter[inspection_id]': String(inspection.id || ''),
+            'filter[report]': 'true',
+            'page[size]': '200',
+            sort: '-created_at'
+          })
+        );
+        return [
+          String(inspection.id || ''),
+          Array.isArray(response?.data) ? response.data : []
+        ];
+      }));
+      for (const [inspectionId, attachments] of fetched) {
+        result[inspectionId] = attachments;
+      }
+    }
+
+    return result;
+  }
+
+  async function ivyBuildPayables(sheetsToken, start, end) {
+    const [inspections, activity] = await Promise.all([
+      ivySpectoraInspectionsForRange(start, end),
+      ivyAllVendorActivity(sheetsToken)
+    ]);
+    const attachmentsByInspection = await ivyAttachmentsForPayables(inspections);
+    return buildVendorPayablesReport({
+      inspections,
+      activities: activity,
+      attachmentsByInspection,
+      start,
+      end
+    });
+  }
+
+  function ivyMoney(value) {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD'
+    }).format(Number(value || 0));
+  }
+
+
+  function ivyPayablesText(report) {
+    const lines = [
+      'IVY Vendor Payables Report',
+      'Pay period: ' + report.start + ' through ' + report.end,
+      '',
+      'Spectora inspections checked: ' + report.inspectionCount,
+      'Vendor services found: ' + report.vendorServiceCount,
+      ''
+    ];
+
+    for (const group of report.groups) {
+      lines.push(group.vendor);
+      for (const row of group.rows) {
+        lines.push(
+          '- ' + row.propertyAddress +
+          ' | ' + String(row.inspectionDate || '').slice(0, 10) +
+          ' | Report: ' + (row.reportReceived ? 'Received' : 'MISSING') +
+          ' | Invoice: ' + (row.invoiceReceived ? 'Received' : 'MISSING') +
+          ' | Amount: ' + (row.amountDue == null ? 'Review' : ivyMoney(row.amountDue)) +
+          ' | ' + row.status
+        );
+      }
+      lines.push('Vendor subtotal: ' + ivyMoney(group.payableTotal));
+      lines.push('');
+    }
+
+    lines.push('Known payable total: ' + ivyMoney(report.payableTotal));
+    lines.push('');
+    lines.push('Amounts marked Needs Review are not guessed and should be confirmed before payroll.');
+    return lines.join('\n');
+  }
+
+  function ivyEscapeHtml(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function ivyPayablesHtml(report) {
+    const vendorSections = report.groups.map(group => {
+      const rows = group.rows.map(row =>
+        '<tr>' +
+          '<td style="padding:8px;border-bottom:1px solid #eee;">' + ivyEscapeHtml(row.propertyAddress) + '</td>' +
+          '<td style="padding:8px;border-bottom:1px solid #eee;">' + ivyEscapeHtml(String(row.inspectionDate || '').slice(0, 10)) + '</td>' +
+          '<td style="padding:8px;border-bottom:1px solid #eee;">' + ivyEscapeHtml(row.spectoraServices || row.service) + '</td>' +
+          '<td style="padding:8px;border-bottom:1px solid #eee;">' + (row.reportReceived ? 'Received' : '<strong>MISSING</strong>') + '</td>' +
+          '<td style="padding:8px;border-bottom:1px solid #eee;">' + (row.invoiceReceived ? 'Received' : '<strong>MISSING</strong>') + '</td>' +
+          '<td style="padding:8px;border-bottom:1px solid #eee;text-align:right;">' + (row.amountDue == null ? 'Review' : ivyEscapeHtml(ivyMoney(row.amountDue))) + '</td>' +
+          '<td style="padding:8px;border-bottom:1px solid #eee;">' + ivyEscapeHtml(row.status) + '</td>' +
+        '</tr>'
+      ).join('');
+
+      return '<h3 style="margin:28px 0 8px;">' + ivyEscapeHtml(group.vendor) + '</h3>' +
+        '<table cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;font-size:13px;">' +
+          '<tr style="background:#f5f5f5;">' +
+            '<th align="left" style="padding:8px;">Property</th>' +
+            '<th align="left" style="padding:8px;">Inspection</th>' +
+            '<th align="left" style="padding:8px;">Spectora Service</th>' +
+            '<th align="left" style="padding:8px;">Report</th>' +
+            '<th align="left" style="padding:8px;">Invoice</th>' +
+            '<th align="right" style="padding:8px;">Amount</th>' +
+            '<th align="left" style="padding:8px;">Status</th>' +
+          '</tr>' + rows +
+        '</table>' +
+        '<div style="margin-top:8px;font-weight:700;">' +
+          'Vendor subtotal: ' + ivyEscapeHtml(ivyMoney(group.payableTotal)) +
+          ' &nbsp; | &nbsp; Missing reports: ' + group.missingReports +
+          ' &nbsp; | &nbsp; Missing invoices: ' + group.missingInvoices +
+          ' &nbsp; | &nbsp; Needs review: ' + group.needsReview +
+        '</div>';
+    }).join('');
+
+    return '<div style="font-family:Arial,Helvetica,sans-serif;color:#171717;max-width:980px;">' +
+      '<div style="font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#b0163a;font-weight:700;">Inspectology Operations</div>' +
+      '<h2 style="margin:5px 0;">IVY Vendor Payables Report</h2>' +
+      '<div style="color:#666;">Pay period: ' + ivyEscapeHtml(report.start) + ' through ' + ivyEscapeHtml(report.end) + '</div>' +
+      '<div style="margin:18px 0;padding:14px;border:1px solid #ddd;border-radius:10px;">' +
+        '<strong>Spectora inspections checked:</strong> ' + report.inspectionCount +
+        ' &nbsp; | &nbsp; <strong>Vendor services:</strong> ' + report.vendorServiceCount +
+        ' &nbsp; | &nbsp; <strong>Known payable total:</strong> ' + ivyEscapeHtml(ivyMoney(report.payableTotal)) +
+      '</div>' +
+      vendorSections +
+      '<div style="margin-top:28px;padding:12px;background:#fff8e8;border:1px solid #ead8a7;border-radius:8px;">' +
+        'Anything marked Needs Review is intentionally excluded from guessed pricing and should be confirmed before payroll.' +
+      '</div>' +
+    '</div>';
+  }
+
+  async function ivyEmailPayables(report, recipient) {
+    const to = String(recipient || config.operations.payablesEmailTo || '').trim().toLowerCase();
+    if (!to) throw authError('Vendor payables email recipient is not configured', 503);
+    return sendIvyEmail(
+      { resendApiKey: config.operations.resendApiKey },
+      {
+        to,
+        subject: 'IVY Vendor Payables | ' + report.start + ' - ' + report.end,
+        text: ivyPayablesText(report),
+        html: ivyPayablesHtml(report)
+      }
+    );
+  }
+
+
+
+
+  function ivyVendorKeysFromPrompt(prompt) {
+    const text = String(prompt || '');
+    const keys = [];
+    if (/\b(cambro(?:['’]?s)?|chimney)\b/i.test(text)) keys.push('chimney');
+    if (/\b(lynn\s*pest|lynn|termite|wdo)\b/i.test(text)) keys.push('termite');
+    if (/\b(atlantic\s*blue|well\s*yield|well|water\s*(?:quality|test|testing)?)\b/i.test(text)) keys.push('well_water');
+    if (/\b(young\s*septic|septic)\b/i.test(text)) keys.push('septic');
+    return [...new Set(keys)];
+  }
+
+
+
+
+  function ivyNewYorkClock(now = new Date()) {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      weekday: 'short',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      hourCycle: 'h23'
+    }).formatToParts(now);
+    const get = type => parts.find(part => part.type === type)?.value || '';
+    return {
+      weekday: get('weekday'),
+      date: get('year') + '-' + get('month') + '-' + get('day'),
+      hour: Number(get('hour'))
+    };
+  }
+
+  function ivyPayablesMondayIsDue(dateOnly) {
+    const date = ivyPayablesDate(dateOnly);
+    const anchor = ivyPayablesDate(config.operations.payablesAnchorMonday);
+    if (!date || !anchor) return false;
+    const diff = Math.round(
+      (Date.parse(date + 'T12:00:00Z') - Date.parse(anchor + 'T12:00:00Z')) / 86_400_000
+    );
+    return diff >= 0 && diff % 14 === 0;
+  }
+
+  async function ivyPayablesAlreadySent(sheetsToken, periodEnd) {
+    const rows = await readRows(
+      sheetsToken,
+      config.operations.spreadsheetId,
+      "'Weekly Summary'!A2:H"
+    );
+    return rows.some(row =>
+      String(row[0] || '') === String(periodEnd || '') &&
+      /ivy payroll report sent/i.test(String(row[7] || ''))
+    );
+  }
+
+  async function ivyRecordPayablesRun(sheetsToken, report, recipient) {
+    const summary = report.groups.map(group => ({
+      vendor: group.vendor,
+      service: 'Vendor Payables',
+      inspectionCount: group.rows.length,
+      totalVendorCost: group.payableTotal,
+      missingReports: group.missingReports,
+      needsReview: group.needsReview,
+      notes:
+        'IVY payroll report sent to ' + recipient +
+        '. Missing invoices: ' + group.missingInvoices +
+        '. Pay period: ' + report.start + ' through ' + report.end + '.'
+    }));
+    await appendWeeklySummary(
+      sheetsToken,
+      config.operations,
+      report.end,
+      summary
+    );
+  }
+
+  function ivyCronAuthorized(req) {
+    const secret = String(config.operations.cronSecret || '');
+    if (!secret) return false;
+    const supplied = String(req.headers.authorization || '');
+    const expected = 'Bearer ' + secret;
+    if (supplied.length !== expected.length) return false;
+    return crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
+  }
+
+
   async function getAgentPayload(connectionId) {
     const sample = applyCustomization(readSampleAgent(), config.branding, config.demoAgent, config.demoTier);
     if (config.mode === 'demo') return { ...sample, meta: { mode: 'demo' } };
@@ -1890,6 +2249,60 @@ function createPortal(options = {}) {
       if (req.method === 'GET' && pathname === '/api/health') {
         sendJson(res, 200, { status: 'ok', service: 'spectora-agent-portal', mode: config.mode }); status = 200; return;
       }
+      if (req.method === 'GET' && pathname === '/api/cron/vendor-payables') {
+        if (!ivyCronAuthorized(req)) {
+          sendJson(res, 401, { error: 'Unauthorized' });
+          status = 401;
+          return;
+        }
+
+        const clock = ivyNewYorkClock();
+        if (clock.weekday !== 'Mon' || clock.hour !== 8 || !ivyPayablesMondayIsDue(clock.date)) {
+          sendJson(res, 200, {
+            status: 'skipped',
+            reason: 'Not a scheduled IVY payroll Monday at 8 AM Eastern',
+            localDate: clock.date,
+            localHour: clock.hour
+          });
+          status = 200;
+          return;
+        }
+
+        const periodEnd = ivyPayablesDateAdd(clock.date, -1);
+        const periodStart = ivyPayablesDateAdd(clock.date, -14);
+        const token = await googleSheetsAccessToken(
+          config,
+          String(req.headers['x-vercel-oidc-token'] || '')
+        );
+
+        if (await ivyPayablesAlreadySent(token, periodEnd)) {
+          sendJson(res, 200, {
+            status: 'skipped',
+            reason: 'IVY vendor payables report was already sent for this pay period',
+            periodStart,
+            periodEnd
+          });
+          status = 200;
+          return;
+        }
+
+        const report = await ivyBuildPayables(token, periodStart, periodEnd);
+        const recipient = config.operations.payablesEmailTo;
+        await ivyEmailPayables(report, recipient);
+        await ivyRecordPayablesRun(token, report, recipient);
+
+        sendJson(res, 200, {
+          status: 'sent',
+          sentTo: recipient,
+          periodStart,
+          periodEnd,
+          payableTotal: report.payableTotal,
+          vendorServiceCount: report.vendorServiceCount
+        });
+        status = 200;
+        return;
+      }
+
       if (req.method === 'GET' && pathname === '/api/design-preview') {
         const targetEnv = String(process.env.VERCEL_TARGET_ENV || process.env.VERCEL_ENV || '').toLowerCase();
         if (targetEnv === 'production') {
@@ -2065,6 +2478,23 @@ function createPortal(options = {}) {
               adminEmailLogin: adminEmailAuthConfigured(config)
             }
           });
+          status = 200;
+          return;
+        }
+        if (req.method === 'GET' && pathname === '/api/admin/ivy/payables') {
+          const start = ivyPayablesDate(url.searchParams.get('start'));
+          const end = ivyPayablesDate(url.searchParams.get('end'));
+          if (!start || !end || start > end) {
+            sendJson(res, 400, { error: 'Use start and end dates in YYYY-MM-DD format' });
+            status = 400;
+            return;
+          }
+          const token = await googleSheetsAccessToken(
+            config,
+            String(req.headers['x-vercel-oidc-token'] || '')
+          );
+          const report = await ivyBuildPayables(token, start, end);
+          sendJson(res, 200, { status: 'ok', report });
           status = 200;
           return;
         }
