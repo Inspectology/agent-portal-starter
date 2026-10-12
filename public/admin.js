@@ -28,6 +28,8 @@ const payrollSend = document.getElementById('payrollSend');
 const payrollMessage = document.getElementById('payrollMessage');
 const payrollResults = document.getElementById('payrollResults');
 const payrollRecipient = document.getElementById('payrollRecipient');
+const payrollDeliveryStatus = document.getElementById('payrollDeliveryStatus');
+const payrollCheckDelivery = document.getElementById('payrollCheckDelivery');
 
 let adminKey = sessionStorage.getItem('inspectologyAdminKey') || '';
 let pendingChallenge = sessionStorage.getItem('inspectologyAdminChallenge') || '';
@@ -203,6 +205,54 @@ async function loadPayrollDefaults() {
   }
 }
 
+function payrollDeliveryText(delivery) {
+  if (!delivery) return 'No payroll email found in Resend history.';
+  const event = String(delivery.lastEvent || '').toLowerCase();
+  const when = delivery.createdAt ? new Date(delivery.createdAt).toLocaleString() : '';
+  const label = {
+    delivered: 'Delivered',
+    opened: 'Delivered / Opened',
+    clicked: 'Delivered / Clicked',
+    sent: 'Sent by provider',
+    queued: 'Queued by provider',
+    delivery_delayed: 'Delivery delayed',
+    bounced: 'Bounced',
+    complained: 'Complaint',
+    failed: 'Failed'
+  }[event] || (delivery.lastEvent || 'Unknown');
+
+  return [
+    label,
+    delivery.subject || '',
+    when ? 'Provider time: ' + when : '',
+    delivery.id ? 'Resend ID: ' + delivery.id : ''
+  ].filter(Boolean).join(' · ');
+}
+
+async function loadPayrollDeliveryStatus() {
+  if (!payrollDeliveryStatus) return;
+  payrollDeliveryStatus.textContent = 'Checking delivery history...';
+  if (payrollCheckDelivery) payrollCheckDelivery.disabled = true;
+  try {
+    const body = await api('/api/admin/ivy/payables/email-status');
+    payrollDeliveryStatus.textContent = payrollDeliveryText(body.delivery);
+    const event = String(body.delivery?.lastEvent || '').toLowerCase();
+    payrollDeliveryStatus.classList.toggle(
+      'payroll-delivery-good',
+      ['delivered', 'opened', 'clicked'].includes(event)
+    );
+    payrollDeliveryStatus.classList.toggle(
+      'payroll-delivery-bad',
+      ['bounced', 'complained', 'failed'].includes(event)
+    );
+  } catch (error) {
+    payrollDeliveryStatus.textContent = 'Could not check Resend delivery: ' + error.message;
+    payrollDeliveryStatus.classList.remove('payroll-delivery-good', 'payroll-delivery-bad');
+  } finally {
+    if (payrollCheckDelivery) payrollCheckDelivery.disabled = false;
+  }
+}
+
 async function previewPayrollReport() {
   const start = payrollStart.value;
   const end = payrollEnd.value;
@@ -257,7 +307,12 @@ async function sendPayrollReport() {
       body: JSON.stringify({ start, end })
     });
     renderPayrollReport(body.report || {});
-    payrollMessage.textContent = 'Sent to ' + (body.sentTo || 'the configured payroll recipient') + '.';
+    const providerState = body.delivery?.lastEvent
+      ? ' Provider status: ' + body.delivery.lastEvent + '.'
+      : (body.providerId ? ' Resend accepted the message as ' + body.providerId + '.' : '');
+    payrollMessage.textContent =
+      'Send accepted for ' + (body.sentTo || 'the configured payroll recipient') + '.' + providerState;
+    await loadPayrollDeliveryStatus();
   } catch (error) {
     payrollMessage.textContent = error.message;
   } finally {
@@ -272,6 +327,7 @@ async function verifyAdmin() {
   renderLaunchReadiness(body.readiness || {});
   showSearch(body);
   await loadPayrollDefaults();
+  await loadPayrollDeliveryStatus();
   return body;
 }
 
@@ -364,6 +420,10 @@ if (payrollPreview) {
 
 if (payrollSend) {
   payrollSend.addEventListener('click', sendPayrollReport);
+}
+
+if (payrollCheckDelivery) {
+  payrollCheckDelivery.addEventListener('click', loadPayrollDeliveryStatus);
 }
 
 searchForm.addEventListener('submit', async event => {
