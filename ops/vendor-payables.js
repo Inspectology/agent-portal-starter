@@ -257,7 +257,12 @@ function priceAtlanticBlue(serviceText) {
 
   const add = (label, amount) => items.push({ label, amount });
 
-  if (/baltimore\s*county[^|,;]*yield|\bbc\s*yield\b/i.test(text)) {
+  if (
+    /baltimore\s*county[^|,;]*yield/i.test(text) ||
+    /yield[^|,;]*baltimore\s*county/i.test(text) ||
+    /\bbc\s*yield\b/i.test(text) ||
+    /yield[^|,;]*\bbc\b/i.test(text)
+  ) {
     add('Baltimore County Yield', 435);
   } else if (/3\s*(?:hr|hour)[^|,;]*yield|yield[^|,;]*3\s*(?:hr|hour)/i.test(text)) {
     add('3 Hr Yield', 345);
@@ -444,8 +449,16 @@ function buildVendorPayablesReport({
         ? invoiceAmounts.reduce((sum, value) => sum + value, 0)
         : null;
 
-      let amount = invoiceAmount != null ? invoiceAmount : pricing.amount;
-      let priceConfidence = invoiceAmount != null ? 'invoice' : pricing.confidence;
+      const useKnownAtlanticBlueRate =
+        vendor.key === 'well_water' &&
+        pricing.confidence === 'high' &&
+        pricing.amount != null;
+      let amount = useKnownAtlanticBlueRate
+        ? pricing.amount
+        : (invoiceAmount != null ? invoiceAmount : pricing.amount);
+      let priceConfidence = useKnownAtlanticBlueRate
+        ? 'high'
+        : (invoiceAmount != null ? 'invoice' : pricing.confidence);
       const notes = [pricing.note || ''];
 
       if (
