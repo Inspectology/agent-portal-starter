@@ -2001,7 +2001,7 @@ function createPortal(options = {}) {
       for (const row of group.rows) {
         lines.push(
           '- ' + row.propertyAddress +
-          ' | ' + String(row.inspectionDate || '').slice(0, 10) +
+          ' | ' + String(row.serviceDate || row.inspectionDate || '').slice(0, 10) +
           ' | Report: ' + (row.reportReceived ? 'Received' : 'MISSING') +
           ' | Invoice: ' + (row.invoiceReceived ? 'Received' : 'MISSING') +
           ' | Amount: ' + (row.amountDue == null ? 'Review' : ivyMoney(row.amountDue)) +
@@ -2032,7 +2032,7 @@ function createPortal(options = {}) {
       const rows = group.rows.map(row =>
         '<tr>' +
           '<td style="padding:8px;border-bottom:1px solid #eee;">' + ivyEscapeHtml(row.propertyAddress) + '</td>' +
-          '<td style="padding:8px;border-bottom:1px solid #eee;">' + ivyEscapeHtml(String(row.inspectionDate || '').slice(0, 10)) + '</td>' +
+          '<td style="padding:8px;border-bottom:1px solid #eee;">' + ivyEscapeHtml(String(row.serviceDate || row.inspectionDate || '').slice(0, 10)) + '</td>' +
           '<td style="padding:8px;border-bottom:1px solid #eee;">' + ivyEscapeHtml(row.spectoraServices || row.service) + '</td>' +
           '<td style="padding:8px;border-bottom:1px solid #eee;">' + (row.reportReceived ? 'Received' : '<strong>MISSING</strong>') + '</td>' +
           '<td style="padding:8px;border-bottom:1px solid #eee;">' + (row.invoiceReceived ? 'Received' : '<strong>MISSING</strong>') + '</td>' +
@@ -2045,7 +2045,7 @@ function createPortal(options = {}) {
         '<table cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;font-size:13px;">' +
           '<tr style="background:#f5f5f5;">' +
             '<th align="left" style="padding:8px;">Property</th>' +
-            '<th align="left" style="padding:8px;">Inspection</th>' +
+            '<th align="left" style="padding:8px;">Vendor Service</th>' +
             '<th align="left" style="padding:8px;">Spectora Service</th>' +
             '<th align="left" style="padding:8px;">Report</th>' +
             '<th align="left" style="padding:8px;">Invoice</th>' +
