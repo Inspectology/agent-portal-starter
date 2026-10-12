@@ -68,6 +68,13 @@ function reconciledVendorsForInspection(
   activities = [],
   attachmentsByInspection = {}
 ) {
+  const attrs = inspection?.attributes || inspection || {};
+  const lockedVendorKey = String(attrs.ivy_vendor_key || '').trim();
+  if (lockedVendorKey) {
+    const locked = payrollVendors().find(vendor => vendor.key === lockedVendorKey);
+    return locked ? [locked] : [];
+  }
+
   const byKey = new Map();
   for (const vendor of [
     ...expectedVendorsForInspection(inspection),
@@ -163,9 +170,17 @@ function dateOnly(value) {
 
 function activityMatchesInspection(item, inspection, vendor) {
   if (!sameVendor(item?.vendor, vendor?.company)) return false;
+  const attrs = inspection?.attributes || inspection || {};
   const inspectionId = String(inspection?.id || '').trim();
+  const originalInspectionId = String(attrs.ivy_spectora_inspection_id || '').trim();
   const itemInspectionId = String(item?.spectoraInspectionId || '').trim();
-  if (inspectionId && itemInspectionId && inspectionId === itemInspectionId) return true;
+  if (
+    itemInspectionId &&
+    (
+      (inspectionId && inspectionId === itemInspectionId) ||
+      (originalInspectionId && originalInspectionId === itemInspectionId)
+    )
+  ) return true;
   return sameAddress(item?.propertyAddress || item?.notes, inspectionAddress(inspection));
 }
 
@@ -292,9 +307,17 @@ function reportFor(activities, inspection, vendor, attachmentsByInspection = {})
 }
 
 function invoiceKey(item) {
+  const invoiceNumber = String(item?.invoiceNumber || '').trim();
+  if (invoiceNumber && !/^(?:from|should)$/i.test(invoiceNumber)) {
+    return [
+      normalize(item?.vendor),
+      'invoice',
+      invoiceNumber.toLowerCase()
+    ].join('|');
+  }
   return [
+    normalize(item?.vendor),
     String(item?.sourceEmailId || ''),
-    String(item?.invoiceNumber || ''),
     String(item?.attachmentFilename || ''),
     normalizeStreet(item?.propertyAddress || '')
   ].join('|');
@@ -302,13 +325,26 @@ function invoiceKey(item) {
 
 function directInvoicesFor(activities, inspection, vendor, usedInvoiceKeys) {
   const address = inspectionAddress(inspection);
+  const attrs = inspection?.attributes || inspection || {};
+  const syntheticScheduleCutoff =
+    attrs.ivy_activity_backed &&
+    attrs.ivy_activity_kind === 'schedule'
+      ? Date.parse(attrs.ivy_activity_received_at || '') || null
+      : null;
+
   const matches = [];
   for (const item of activities) {
     if (normalize(item.entryType) !== 'invoice') continue;
     if (!sameVendor(item.vendor, vendor.company)) continue;
+    if (!sameAddress(item.propertyAddress || item.notes, address)) continue;
+
+    if (syntheticScheduleCutoff != null) {
+      const invoiceTime = Date.parse(item.receivedAt || '') || null;
+      if (invoiceTime != null && invoiceTime < syntheticScheduleCutoff) continue;
+    }
+
     const key = invoiceKey(item);
     if (usedInvoiceKeys.has(key)) continue;
-    if (!sameAddress(item.propertyAddress || item.notes, address)) continue;
     usedInvoiceKeys.add(key);
     matches.push(item);
   }
@@ -473,15 +509,21 @@ function rowStatus({ reportReceived, invoiceReceived, amount, priceConfidence })
   return 'Ready to Pay';
 }
 
+function payrollVendorFromActivity(item) {
+  return payrollVendors().find(vendor => sameVendor(item?.vendor, vendor.company)) || null;
+}
+
 function activityBackedInspections(inspections = [], activities = [], start, end) {
-  const knownIds = new Set(inspections.map(item => String(item?.id || '')).filter(Boolean));
   const synthetic = [];
+  const syntheticKeys = new Set();
 
   for (const item of activities) {
     const entryType = normalize(item.entryType);
     if (!['report', 'schedule', 'scheduled'].includes(entryType)) continue;
 
-    const inspectionId = String(item.spectoraInspectionId || '').trim();
+    const vendor = payrollVendorFromActivity(item);
+    if (!vendor) continue;
+
     const isSchedule = entryType === 'schedule' || entryType === 'scheduled';
     const activityDate = isSchedule
       ? dateOnly(item.inspectionDate || item.serviceDate)
@@ -492,32 +534,39 @@ function activityBackedInspections(inspections = [], activities = [], start, end
     if (end && activityDate > String(end)) continue;
 
     const matchesExisting = inspections.some(inspection =>
-      (inspectionId && String(inspection?.id || '') === inspectionId) ||
       sameAddress(inspectionAddress(inspection), item.propertyAddress)
     );
     if (matchesExisting) continue;
-    if (inspectionId && knownIds.has(inspectionId)) continue;
 
-    const syntheticId = inspectionId || [
-      'ivy',
-      normalize(item.vendor).replace(/[^a-z0-9]+/g, '-'),
-      streetCore(item.propertyAddress).replace(/[^a-z0-9]+/g, '-'),
+    const key = [
+      vendor.key,
+      streetCore(item.propertyAddress),
       activityDate
-    ].join('-');
+    ].join('|');
+    if (syntheticKeys.has(key)) continue;
+    syntheticKeys.add(key);
 
     synthetic.push({
-      id: syntheticId,
+      id: [
+        'ivy',
+        vendor.key,
+        streetCore(item.propertyAddress).replace(/[^a-z0-9]+/g, '-'),
+        activityDate
+      ].join('-'),
       attributes: {
         full_address: item.propertyAddress,
         property_address: item.propertyAddress,
         datetime: activityDate + 'T12:00:00-04:00',
-        service_names: item.service || '',
+        service_names: item.service || vendor.service,
         service_add_on_names: '',
         description: item.notes || '',
-        ivy_activity_backed: true
+        ivy_activity_backed: true,
+        ivy_vendor_key: vendor.key,
+        ivy_activity_kind: isSchedule ? 'schedule' : 'report',
+        ivy_activity_received_at: String(item.receivedAt || ''),
+        ivy_spectora_inspection_id: String(item.spectoraInspectionId || '')
       }
     });
-    knownIds.add(syntheticId);
   }
 
   return synthetic;
