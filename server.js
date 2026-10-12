@@ -2062,19 +2062,6 @@ function createPortal(options = {}) {
 
 
 
-  function ivyVendorKeysFromPrompt(prompt) {
-    const text = String(prompt || '');
-    const keys = [];
-    if (/\b(cambro(?:['’]?s)?|chimney)\b/i.test(text)) keys.push('chimney');
-    if (/\b(lynn\s*pest|lynn|termite|wdo)\b/i.test(text)) keys.push('termite');
-    if (/\b(atlantic\s*blue|well\s*yield|well|water\s*(?:quality|test|testing)?)\b/i.test(text)) keys.push('well_water');
-    if (/\b(young\s*septic|septic)\b/i.test(text)) keys.push('septic');
-    return [...new Set(keys)];
-  }
-
-
-
-
   function ivyNewYorkClock(now = new Date()) {
     const parts = new Intl.DateTimeFormat('en-US', {
       timeZone: 'America/New_York',
