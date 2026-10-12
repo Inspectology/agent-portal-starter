@@ -461,3 +461,52 @@ test('latest canceled vendor schedule excludes 3010 N Branch', () => {
 
   assert.equal(report.rows.some(row => row.vendor === 'Lynn Pest Management'), false);
 });
+
+
+test('Lynn directional invoice addresses with ZIP codes match canonical addresses', () => {
+  assert.equal(
+    sameAddress('633 36th St E 21218', '633 E 36th St, Baltimore, MD 21218'),
+    true
+  );
+  assert.equal(
+    sameAddress('122 Lanvale St W 21217', '122 W Lanvale St, Baltimore, MD 21217'),
+    true
+  );
+  assert.equal(
+    sameAddress('1213 41st St W 21211', '1213 W 41st St, Baltimore, MD 21211'),
+    true
+  );
+});
+
+test('Lynn missing invoice is labeled Missing Invoice instead of Needs Review', () => {
+  const item = {
+    id: '11862996',
+    attributes: {
+      full_address: '633 E 36th St, Baltimore, MD 21218',
+      datetime: '2026-10-01T09:00:00-04:00',
+      service_names: 'Row Home / Town Home Inspection | Termite Inspection'
+    }
+  };
+
+  const report = buildVendorPayablesReport({
+    inspections: [item],
+    activities: [
+      {
+        receivedAt: '2026-10-02T11:33:53Z',
+        entryType: 'Report',
+        vendor: 'Lynn Pest Management',
+        service: 'Termite / WDO',
+        propertyAddress: item.attributes.full_address,
+        spectoraInspectionId: item.id,
+        inspectionDate: item.attributes.datetime,
+        status: 'Matched'
+      }
+    ],
+    start: '2026-09-28',
+    end: '2026-10-11'
+  });
+
+  const row = report.rows.find(entry => entry.vendor === 'Lynn Pest Management');
+  assert.ok(row);
+  assert.equal(row.status, 'Missing Invoice');
+});
