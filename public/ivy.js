@@ -34,6 +34,7 @@ let pendingEmail = sessionStorage.getItem('ivyAdminEmail') || '';
 let installPrompt = null;
 let latestActivity = [];
 let activityExpanded = false;
+let ivyCommandHistory = [];
 let latestInboxReview = [];
 let inboxExpanded = false;
 const ACTIVITY_PREVIEW_COUNT = 5;
@@ -648,17 +649,24 @@ commandForm.addEventListener('submit', async event => {
   if (!prompt) return;
   commandInput.value = '';
   addBubble(prompt, 'user');
+  const priorHistory = ivyCommandHistory.slice(-10);
+  ivyCommandHistory.push({ role: 'user', text: prompt });
   addBubble('Working on it...', 'assistant');
   const working = conversation.lastElementChild;
   try {
     const body = await api('/api/admin/ivy/command', {
       method: 'POST',
-      body: JSON.stringify({ prompt })
+      body: JSON.stringify({ prompt, history: priorHistory })
     });
-    working.textContent = body.answer || 'I did not get a usable answer.';
+    const answer = body.answer || 'I did not get a usable answer.';
+    working.textContent = answer;
+    ivyCommandHistory.push({ role: 'assistant', text: answer });
+    ivyCommandHistory = ivyCommandHistory.slice(-12);
     await loadActivity();
   } catch (error) {
     working.textContent = error.message;
+    ivyCommandHistory.push({ role: 'assistant', text: error.message });
+    ivyCommandHistory = ivyCommandHistory.slice(-12);
   }
 });
 
