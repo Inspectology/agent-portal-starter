@@ -66,3 +66,50 @@ test('Atlantic Blue payroll keeps contracted rate when a partial invoice differs
   assert.match(atlanticBlue.notes, /442\.85/);
   assert.match(atlanticBlue.notes, /595\.00/);
 });
+
+
+test('Atlantic Blue preserves materially higher invoice totals for extra work', () => {
+  const item = {
+    id: '11855371',
+    attributes: {
+      full_address: '222 S River Clubhouse Rd, Edgewater, MD 21037',
+      datetime: '2026-10-05T09:30:00-04:00',
+      service_names:
+        'Single-Family Home Inspection | 1 Hour Modified Well Yield (Atlantic Blue), ' +
+        'Potability Water Sampling (Atlantic Blue)'
+    }
+  };
+
+  const report = buildVendorPayablesReport({
+    inspections: [item],
+    activities: [
+      {
+        receivedAt: '2026-10-06T15:40:27.559Z',
+        entryType: 'Invoice',
+        vendor: 'Atlantic Blue',
+        service: 'Well / Water Testing',
+        propertyAddress: '222 South River Clubhouse Road, Edgewater, MD 21037 USA',
+        vendorCost: 320,
+        invoiceNumber: '443319515',
+        status: 'Received'
+      },
+      {
+        receivedAt: '2026-10-06T17:15:12.196Z',
+        entryType: 'Invoice',
+        vendor: 'Atlantic Blue',
+        service: 'Well / Water Testing',
+        propertyAddress: '222 South River Clubhouse Road, Edgewater, MD 21037 USA',
+        vendorCost: 390,
+        invoiceNumber: '443212000',
+        status: 'Received'
+      }
+    ],
+    start: '2026-09-28',
+    end: '2026-10-11'
+  });
+
+  const atlanticBlue = report.rows.find(row => row.vendor === 'Atlantic Blue');
+  assert.ok(atlanticBlue);
+  assert.equal(atlanticBlue.amountDue, 710);
+  assert.equal(atlanticBlue.status, 'Missing Report');
+});
