@@ -21,6 +21,13 @@ const driveBackupDate = document.getElementById('driveBackupDate');
 const driveBackupMessage = document.getElementById('driveBackupMessage');
 const driveBackupResults = document.getElementById('driveBackupResults');
 const launchReadinessResults = document.getElementById('launchReadinessResults');
+const payrollStart = document.getElementById('payrollStart');
+const payrollEnd = document.getElementById('payrollEnd');
+const payrollPreview = document.getElementById('payrollPreview');
+const payrollSend = document.getElementById('payrollSend');
+const payrollMessage = document.getElementById('payrollMessage');
+const payrollResults = document.getElementById('payrollResults');
+const payrollRecipient = document.getElementById('payrollRecipient');
 
 let adminKey = sessionStorage.getItem('inspectologyAdminKey') || '';
 let pendingChallenge = sessionStorage.getItem('inspectologyAdminChallenge') || '';
@@ -119,11 +126,152 @@ function renderLaunchReadiness(readiness = {}) {
   }
 }
 
+function money(value) {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD'
+  }).format(Number(value || 0));
+}
+
+function renderPayrollReport(report = {}) {
+  if (!payrollResults) return;
+  payrollResults.replaceChildren();
+
+  const summary = el('div', { class: 'payroll-summary' }, [
+    el('div', {}, [
+      el('span', { text: 'Pay period' }),
+      el('strong', { text: (report.start || '') + ' through ' + (report.end || '') })
+    ]),
+    el('div', {}, [
+      el('span', { text: 'Vendor services' }),
+      el('strong', { text: String(report.vendorServiceCount || 0) })
+    ]),
+    el('div', {}, [
+      el('span', { text: 'Known payable total' }),
+      el('strong', { text: money(report.payableTotal) })
+    ])
+  ]);
+  payrollResults.append(summary);
+
+  for (const group of report.groups || []) {
+    const stats = [
+      'Subtotal ' + money(group.payableTotal),
+      'Missing reports ' + (group.missingReports || 0),
+      'Missing invoices ' + (group.missingInvoices || 0),
+      'Needs review ' + (group.needsReview || 0)
+    ].join(' · ');
+
+    const rows = el('div', { class: 'payroll-vendor-rows' });
+    for (const row of group.rows || []) {
+      rows.append(
+        el('div', { class: 'payroll-row' }, [
+          el('strong', { text: row.propertyAddress || 'Property' }),
+          el('span', {
+            text: [
+              String(row.inspectionDate || '').slice(0, 10),
+              row.amountDue == null ? 'Amount: Review' : 'Amount: ' + money(row.amountDue),
+              row.status || ''
+            ].filter(Boolean).join(' · ')
+          })
+        ])
+      );
+    }
+
+    payrollResults.append(
+      el('section', { class: 'payroll-vendor-card' }, [
+        el('div', { class: 'payroll-vendor-heading' }, [
+          el('strong', { text: group.vendor || 'Vendor' }),
+          el('span', { text: stats })
+        ]),
+        rows
+      ])
+    );
+  }
+}
+
+async function loadPayrollDefaults() {
+  if (!payrollStart || !payrollEnd) return;
+  try {
+    const body = await api('/api/admin/ivy/payables/default-period');
+    payrollStart.value = body.period?.start || '';
+    payrollEnd.value = body.period?.end || '';
+    payrollRecipient.textContent = body.recipient
+      ? 'Recipient: ' + body.recipient
+      : '';
+  } catch (error) {
+    payrollMessage.textContent = 'Could not load payroll defaults: ' + error.message;
+  }
+}
+
+async function previewPayrollReport() {
+  const start = payrollStart.value;
+  const end = payrollEnd.value;
+  if (!start || !end) {
+    payrollMessage.textContent = 'Choose a pay period start and end date.';
+    return null;
+  }
+
+  payrollPreview.disabled = true;
+  payrollSend.disabled = true;
+  payrollMessage.textContent = 'Building payroll report...';
+  payrollResults.replaceChildren();
+
+  try {
+    const params = new URLSearchParams({ start, end });
+    const body = await api('/api/admin/ivy/payables?' + params.toString());
+    renderPayrollReport(body.report || {});
+    payrollMessage.textContent = 'Preview ready. Nothing has been emailed.';
+    return body.report || null;
+  } catch (error) {
+    payrollMessage.textContent = error.message;
+    return null;
+  } finally {
+    payrollPreview.disabled = false;
+    payrollSend.disabled = false;
+  }
+}
+
+async function sendPayrollReport() {
+  const start = payrollStart.value;
+  const end = payrollEnd.value;
+  if (!start || !end) {
+    payrollMessage.textContent = 'Choose a pay period start and end date.';
+    return;
+  }
+
+  const confirmed = window.confirm(
+    'Send the full third-party vendor payroll report for ' +
+    start + ' through ' + end + ' to ' +
+    (payrollRecipient.textContent.replace(/^Recipient:\s*/, '') || 'the configured payroll recipient') +
+    '?'
+  );
+  if (!confirmed) return;
+
+  payrollPreview.disabled = true;
+  payrollSend.disabled = true;
+  payrollMessage.textContent = 'Building and sending payroll report...';
+
+  try {
+    const body = await api('/api/admin/ivy/payables/email', {
+      method: 'POST',
+      body: JSON.stringify({ start, end })
+    });
+    renderPayrollReport(body.report || {});
+    payrollMessage.textContent = 'Sent to ' + (body.sentTo || 'the configured payroll recipient') + '.';
+  } catch (error) {
+    payrollMessage.textContent = error.message;
+  } finally {
+    payrollPreview.disabled = false;
+    payrollSend.disabled = false;
+  }
+}
+
 async function verifyAdmin() {
   const body = await api('/api/admin/session');
   if (adminKey) sessionStorage.setItem('inspectologyAdminKey', adminKey);
   renderLaunchReadiness(body.readiness || {});
   showSearch(body);
+  await loadPayrollDefaults();
   return body;
 }
 
@@ -209,6 +357,14 @@ fallbackLoginForm.addEventListener('submit', async event => {
     loginMessage.textContent = error.message;
   }
 });
+
+if (payrollPreview) {
+  payrollPreview.addEventListener('click', previewPayrollReport);
+}
+
+if (payrollSend) {
+  payrollSend.addEventListener('click', sendPayrollReport);
+}
 
 searchForm.addEventListener('submit', async event => {
   event.preventDefault();

@@ -81,6 +81,37 @@
 
         <div class="admin-divider"></div>
 
+        <section class="payroll-panel" aria-labelledby="payrollHeading">
+          <div class="payroll-panel-heading">
+            <div>
+              <span class="admin-login-kicker">IVY Operations</span>
+              <h2 id="payrollHeading">Third-Party Vendor Payroll</h2>
+              <p>Preview or manually send the full payroll report for Lynn Pest Management, Cambro Services, Atlantic Blue, and Young Septic.</p>
+            </div>
+            <span id="payrollRecipient" class="payroll-recipient"></span>
+          </div>
+
+          <form id="payrollForm" class="payroll-form">
+            <label class="form-field">
+              <span>Pay period start</span>
+              <input id="payrollStart" type="date" required>
+            </label>
+            <label class="form-field">
+              <span>Pay period end</span>
+              <input id="payrollEnd" type="date" required>
+            </label>
+            <div class="payroll-actions">
+              <button id="payrollPreview" class="secondary-button" type="button">Preview Payroll Report</button>
+              <button id="payrollSend" class="primary-button" type="button">Send Payroll Report Now</button>
+            </div>
+          </form>
+
+          <p id="payrollMessage" class="admin-message" aria-live="polite"></p>
+          <div id="payrollResults" class="payroll-results"></div>
+        </section>
+
+        <div class="admin-divider"></div>
+
         <form id="searchForm" class="admin-search">
           <input id="agentSearch" type="search" placeholder="Search agent name or email" autocomplete="off" required minlength="2">
           <button class="primary-button" type="submit">Search</button>

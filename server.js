@@ -2122,6 +2122,31 @@ function createPortal(options = {}) {
     return diff >= 0 && diff % 14 === 0;
   }
 
+  function ivyMostRecentCompletedPayPeriod(now = new Date()) {
+    const clock = ivyNewYorkClock(now);
+    const today = ivyPayablesDate(clock.date);
+    const anchor = ivyPayablesDate(config.operations.payablesAnchorMonday);
+    if (!today || !anchor) return null;
+
+    const diffDays = Math.floor(
+      (Date.parse(today + 'T12:00:00Z') - Date.parse(anchor + 'T12:00:00Z')) / 86_400_000
+    );
+
+    let reportMonday;
+    if (diffDays < 0) {
+      reportMonday = anchor;
+    } else {
+      const cycles = Math.floor(diffDays / 14);
+      reportMonday = ivyPayablesDateAdd(anchor, cycles * 14);
+      if (reportMonday > today) reportMonday = ivyPayablesDateAdd(reportMonday, -14);
+    }
+
+    return {
+      start: ivyPayablesDateAdd(reportMonday, -14),
+      end: ivyPayablesDateAdd(reportMonday, -1)
+    };
+  }
+
   async function ivyPayablesAlreadySent(sheetsToken, periodEnd) {
     const rows = await readRows(
       sheetsToken,
@@ -2534,6 +2559,59 @@ function createPortal(options = {}) {
           status = 200;
           return;
         }
+        if (req.method === 'GET' && pathname === '/api/admin/ivy/payables/default-period') {
+          const period = ivyMostRecentCompletedPayPeriod();
+          if (!period) {
+            sendJson(res, 503, { error: 'Payroll schedule is not configured' });
+            status = 503;
+            return;
+          }
+          sendJson(res, 200, {
+            status: 'ok',
+            period,
+            recipient: config.operations.payablesEmailTo
+          });
+          status = 200;
+          return;
+        }
+
+        if (req.method === 'POST' && pathname === '/api/admin/ivy/payables/email') {
+          const body = await readJsonBody(req, 12_000);
+          const start = ivyPayablesDate(body.start);
+          const end = ivyPayablesDate(body.end);
+          if (!start || !end || start > end) {
+            sendJson(res, 400, { error: 'Use start and end dates in YYYY-MM-DD format' });
+            status = 400;
+            return;
+          }
+
+          const token = await googleSheetsAccessToken(
+            config,
+            String(req.headers['x-vercel-oidc-token'] || '')
+          );
+
+          if (await ivyPayablesAlreadySent(token, end)) {
+            sendJson(res, 409, {
+              error: 'IVY already recorded a payroll report as sent for this pay period. No duplicate email was sent.'
+            });
+            status = 409;
+            return;
+          }
+
+          const report = await ivyBuildPayables(token, start, end);
+          const recipient = config.operations.payablesEmailTo;
+          await ivyEmailPayables(report, recipient);
+          await ivyRecordPayablesRun(token, report, recipient);
+
+          sendJson(res, 200, {
+            status: 'sent',
+            sentTo: recipient,
+            report
+          });
+          status = 200;
+          return;
+        }
+
         if (req.method === 'GET' && pathname === '/api/admin/agents') {
           const search = String(url.searchParams.get('q') || '').trim();
           if (search.length < 2 || search.length > 120) {
