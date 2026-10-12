@@ -233,3 +233,231 @@ test('canceled Spectora inspection only includes vendors with completion evidenc
   assert.equal(report.rows.some(row => row.vendor === 'Lynn Pest Management'), false);
   assert.equal(report.rows.some(row => row.vendor === 'Cambro Services'), false);
 });
+
+
+test('septic rollover does not pull Atlantic Blue activity from the same old inspection', () => {
+  const report = buildVendorPayablesReport({
+    inspections: [],
+    activities: [
+      {
+        receivedAt: '2026-09-24T12:41:00Z',
+        entryType: 'Scheduled',
+        vendor: 'Young Septic',
+        service: 'Septic Inspection',
+        propertyAddress: '1530 Providence Rd, Towson, MD 21286',
+        spectoraInspectionId: '11821353',
+        inspectionDate: '2026-09-28',
+        status: 'Scheduled'
+      },
+      {
+        receivedAt: '2026-09-28T16:57:02Z',
+        entryType: 'Report',
+        vendor: 'Young Septic',
+        service: 'Septic',
+        propertyAddress: '1530 Providence Rd, Towson, MD 21286',
+        spectoraInspectionId: '11821353',
+        inspectionDate: '2026-09-24T09:00:00-04:00',
+        status: 'Matched'
+      },
+      {
+        receivedAt: '2026-09-25T14:33:45Z',
+        entryType: 'Invoice',
+        vendor: 'Atlantic Blue',
+        service: 'Well / Water Testing',
+        propertyAddress: '1530 Providence Road, Towson, MD 21286',
+        vendorCost: 160,
+        invoiceNumber: '441902074',
+        status: 'Received'
+      }
+    ],
+    start: '2026-09-28',
+    end: '2026-10-11'
+  });
+
+  assert.equal(report.rows.some(row => row.vendor === 'Atlantic Blue'), false);
+  const septic = report.rows.find(row => row.vendor === 'Young Septic');
+  assert.ok(septic);
+  assert.equal(septic.amountDue, 325);
+  assert.equal(septic.serviceDate, '2026-09-28');
+});
+
+test('Pretty Boy rollover includes only the current Atlantic Blue add-on', () => {
+  const report = buildVendorPayablesReport({
+    inspections: [],
+    activities: [
+      {
+        receivedAt: '2026-09-30T12:41:09Z',
+        entryType: 'Scheduled',
+        vendor: 'Atlantic Blue',
+        service: 'Radon in Water Add-on',
+        propertyAddress: '17505 Pretty Boy Dam Rd, Parkton, MD 21120',
+        spectoraInspectionId: '11824241',
+        inspectionDate: '2026-10-01',
+        status: 'Scheduled'
+      },
+      {
+        receivedAt: '2026-09-23T16:47:32Z',
+        entryType: 'Invoice',
+        vendor: 'Atlantic Blue',
+        service: 'Well / Water Testing',
+        propertyAddress: '17505 Pretty Boy Dam Road, Parkton, MD 21120',
+        vendorCost: 435,
+        invoiceNumber: '441932681',
+        status: 'Received'
+      },
+      {
+        receivedAt: '2026-09-23T20:07:39Z',
+        entryType: 'Invoice',
+        vendor: 'Atlantic Blue',
+        service: 'Well / Water Testing',
+        propertyAddress: '17505 Pretty Boy Dam Road, Parkton, MD 21120',
+        vendorCost: 245,
+        invoiceNumber: '441935385',
+        status: 'Received'
+      },
+      {
+        receivedAt: '2026-10-01T15:50:51Z',
+        entryType: 'Invoice',
+        vendor: 'Atlantic Blue',
+        service: 'Well / Water Testing',
+        propertyAddress: '17505 Pretty Boy Dam Road, Parkton, MD 21120',
+        vendorCost: 150,
+        invoiceNumber: '443300193',
+        status: 'Received'
+      },
+      {
+        receivedAt: '2026-10-07T20:31:54Z',
+        entryType: 'Report',
+        vendor: 'Atlantic Blue',
+        service: 'Well / Water Testing',
+        propertyAddress: '17505 Pretty Boy Dam Rd, Parkton, MD 21120',
+        spectoraInspectionId: '11824241',
+        inspectionDate: '2026-09-25T09:00:00-04:00',
+        attachmentFilename: '17505 PRETTY BOY DAM ROAD RADON RESULTS.pdf',
+        status: 'Matched'
+      }
+    ],
+    start: '2026-09-28',
+    end: '2026-10-11'
+  });
+
+  const atlanticBlue = report.rows.find(row => row.vendor === 'Atlantic Blue');
+  assert.ok(atlanticBlue);
+  assert.equal(atlanticBlue.serviceDate, '2026-10-01');
+  assert.equal(atlanticBlue.amountDue, 150);
+});
+
+test('duplicate Atlantic Blue invoice number is counted once and contracted rate wins', () => {
+  const item = {
+    id: '11886820',
+    attributes: {
+      full_address: '1202 Western Run Rd, Cockeysville, MD 21030',
+      datetime: '2026-10-10T09:00:00-04:00',
+      service_names:
+        'Single-Family Home Inspection | 3-6 Hour Well Yield BALTIMORE County (Atlantic Blue), Potability Water Sampling (Atlantic Blue)'
+    }
+  };
+
+  const report = buildVendorPayablesReport({
+    inspections: [item],
+    activities: [
+      {
+        receivedAt: '2026-10-07T20:14:33Z',
+        entryType: 'Invoice',
+        vendor: 'Atlantic Blue',
+        service: 'Well / Water Testing',
+        propertyAddress: '1202 Western Run Road, Cockeysville, MD 21030 USA',
+        vendorCost: 442.85,
+        invoiceNumber: '443753336',
+        status: 'Received'
+      },
+      {
+        receivedAt: '2026-10-12T16:10:46Z',
+        entryType: 'Invoice',
+        vendor: 'Atlantic Blue',
+        service: 'Well / Water Testing',
+        propertyAddress: '1202 Western Run Road, Cockeysville, MD 21030 USA',
+        vendorCost: 435,
+        invoiceNumber: '443753336',
+        status: 'Received'
+      },
+      {
+        receivedAt: '2026-10-08T15:58:26Z',
+        entryType: 'Report',
+        vendor: 'Atlantic Blue',
+        service: 'Well / Water Testing',
+        propertyAddress: item.attributes.full_address,
+        spectoraInspectionId: item.id,
+        inspectionDate: item.attributes.datetime,
+        status: 'Matched'
+      }
+    ],
+    start: '2026-09-28',
+    end: '2026-10-11'
+  });
+
+  const row = report.rows.find(entry => entry.vendor === 'Atlantic Blue');
+  assert.ok(row);
+  assert.equal(row.invoiceCount, 1);
+  assert.equal(row.amountDue, 595);
+});
+
+test('canceled Spectora inspection excludes vendor without completion evidence', () => {
+  const item = {
+    id: '11999999',
+    attributes: {
+      full_address: '3010 N Branch Ln, Parkville, MD 21234',
+      datetime: '2026-10-09T13:30:00-04:00',
+      canceled_at: '2026-10-09T08:00:00-04:00',
+      service_names: 'Row Home / Town Home Inspection | Termite Inspection'
+    }
+  };
+
+  const report = buildVendorPayablesReport({
+    inspections: [item],
+    activities: [],
+    start: '2026-09-28',
+    end: '2026-10-11'
+  });
+
+  assert.equal(report.rows.some(row => row.vendor === 'Lynn Pest Management'), false);
+});
+
+test('latest canceled vendor schedule excludes 3010 N Branch', () => {
+  const item = {
+    id: '11999998',
+    attributes: {
+      full_address: '3010 N Branch Ln, Parkville, MD 21234',
+      datetime: '2026-10-09T13:30:00-04:00',
+      service_names: 'Row Home / Town Home Inspection | Termite Inspection'
+    }
+  };
+
+  const report = buildVendorPayablesReport({
+    inspections: [item],
+    activities: [
+      {
+        receivedAt: '2026-10-08T20:22:17Z',
+        entryType: 'Scheduled',
+        vendor: 'Lynn Pest Management',
+        service: 'Termite / WDO',
+        propertyAddress: item.attributes.full_address,
+        inspectionDate: '2026-10-10',
+        status: 'Scheduled'
+      },
+      {
+        receivedAt: '2026-10-12T18:12:44Z',
+        entryType: 'Scheduled',
+        vendor: 'Lynn Pest Management',
+        service: 'Termite / WDO',
+        propertyAddress: item.attributes.full_address,
+        inspectionDate: '2026-10-10',
+        status: 'Canceled'
+      }
+    ],
+    start: '2026-09-28',
+    end: '2026-10-11'
+  });
+
+  assert.equal(report.rows.some(row => row.vendor === 'Lynn Pest Management'), false);
+});
