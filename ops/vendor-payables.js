@@ -5,7 +5,7 @@ const { VENDORS, compactStreet, normalizeStreet } = require('./vendor-intake');
 const PAYROLL_VENDOR_KEYS = new Set(['termite', 'chimney', 'well_water', 'septic']);
 
 function payrollVendors() {
-  return payrollVendors().filter(vendor => PAYROLL_VENDOR_KEYS.has(vendor.key));
+  return VENDORS.filter(vendor => PAYROLL_VENDOR_KEYS.has(vendor.key));
 }
 
 function normalize(value) {
