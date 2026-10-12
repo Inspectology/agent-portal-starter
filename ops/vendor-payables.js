@@ -452,7 +452,11 @@ function buildVendorPayablesReport({
       const useKnownAtlanticBlueRate =
         vendor.key === 'well_water' &&
         pricing.confidence === 'high' &&
-        pricing.amount != null;
+        pricing.amount != null &&
+        (
+          invoiceAmount == null ||
+          invoiceAmount <= Number(pricing.amount) + 25
+        );
       let amount = useKnownAtlanticBlueRate
         ? pricing.amount
         : (invoiceAmount != null ? invoiceAmount : pricing.amount);
