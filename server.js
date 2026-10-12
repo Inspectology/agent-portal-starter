@@ -220,6 +220,14 @@ function authError(message, statusCode = 401) {
   return error;
 }
 
+function safeRuntimeErrorMessage(error) {
+  const raw = String(error?.message || error?.name || 'Unexpected processing error')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/Bearer\s+[A-Za-z0-9._~-]+/gi, 'Bearer [redacted]')
+    .trim();
+  return raw.slice(0, 180) || 'Unexpected processing error';
+}
+
 class UpstreamHttpError extends Error {
   constructor(upstreamStatus) {
     super(`Spectora API returned ${upstreamStatus}`);
@@ -2164,15 +2172,32 @@ function createPortal(options = {}) {
 
     const inspections = await fetchUpstream('Inspection history lookup', query('/v2/inspections', {
       'filter[connection_id]': connectionId,
-      'fields[inspection]': 'slug,datetime,published_at,canceled_at,full_address,property_address,property_address_2,service_names,service_add_on_names,inspector_name',
+      'fields[inspection]': 'slug,datetime,published_at,canceled_at,full_address,property_address,property_address_2,service_names,service_add_on_names,inspector_name,company',
       include: 'company',
       sort: '-datetime',
       'page[size]': '50'
     }));
     if (!Array.isArray(inspections.data)) throw authError('Upstream inspections data missing', 403);
-    assertInspectionCompanyScope(inspections.data, scope);
-    const attrs = connection.attributes || {};
-    const mappedInspections = (inspections.data || []).map(mapInspection);
+
+    const inspectionRecords = inspections.data.filter(record =>
+      record &&
+      typeof record === 'object' &&
+      String(record.id || '').trim()
+    );
+    assertInspectionCompanyScope(inspectionRecords, scope);
+
+    const attrs = connection.attributes && typeof connection.attributes === 'object'
+      ? connection.attributes
+      : {};
+
+    let mappedInspections;
+    try {
+      mappedInspections = inspectionRecords.map(mapInspection).filter(item => item.id);
+    } catch (error) {
+      error.safeDetail = `Inspection history formatting failed: ${safeRuntimeErrorMessage(error)}`;
+      throw error;
+    }
+
     return {
       meta: { mode: 'live' },
       company: sample.company,
@@ -3107,7 +3132,10 @@ function createPortal(options = {}) {
       status = Number(error.statusCode) || 502;
       if (!res.headersSent) {
         const payload = { error: status === 502 ? 'Upstream service unavailable' : error.message };
-        if (status === 502 && error.safeDetail) payload.detail = error.safeDetail;
+        if (status === 502) {
+          payload.detail = error.safeDetail ||
+            `Agent dashboard processing failed: ${safeRuntimeErrorMessage(error)}`;
+        }
         sendJson(res, status, payload);
       } else res.destroy?.();
     } finally {
