@@ -2,6 +2,12 @@
 
 const { VENDORS, compactStreet, normalizeStreet } = require('./vendor-intake');
 
+const PAYROLL_VENDOR_KEYS = new Set(['termite', 'chimney', 'well_water', 'septic']);
+
+function payrollVendors() {
+  return payrollVendors().filter(vendor => PAYROLL_VENDOR_KEYS.has(vendor.key));
+}
+
 function normalize(value) {
   return String(value || '').trim().toLowerCase();
 }
@@ -30,7 +36,7 @@ function inspectionServiceText(inspection) {
 
 function expectedVendorsForInspection(inspection) {
   const text = inspectionServiceText(inspection);
-  return VENDORS.filter(vendor =>
+  return payrollVendors().filter(vendor =>
     vendor.servicePatterns.some(pattern => pattern.test(text))
   );
 }
@@ -39,7 +45,7 @@ function vendorsSupportedByActivity(inspection, activities = []) {
   const address = inspectionAddress(inspection);
   if (!address) return [];
 
-  return VENDORS.filter(vendor =>
+  return payrollVendors().filter(vendor =>
     activities.some(item =>
       sameVendor(item.vendor, vendor.company) &&
       ['report', 'invoice'].includes(normalize(item.entryType)) &&
@@ -52,7 +58,7 @@ function vendorsSupportedByAttachments(inspection, attachmentsByInspection = {})
   const inspectionId = String(inspection?.id || '');
   const attachments = attachmentsByInspection[inspectionId] || [];
   if (!attachments.length) return [];
-  return VENDORS.filter(vendor =>
+  return payrollVendors().filter(vendor =>
     attachments.some(item => attachmentMatchesVendor(item, vendor))
   );
 }
@@ -70,7 +76,7 @@ function reconciledVendorsForInspection(
   ]) {
     byKey.set(vendor.key, vendor);
   }
-  return [...byKey.values()];
+  return [...byKey.values()].filter(vendor => PAYROLL_VENDOR_KEYS.has(vendor.key));
 }
 
 function sameVendor(left, right) {
@@ -519,6 +525,7 @@ function buildVendorPayablesReport({
 }
 
 module.exports = {
+  PAYROLL_VENDOR_KEYS,
   activityBackedInspections,
   attachmentMatchesVendor,
   buildVendorPayablesReport,
