@@ -493,8 +493,10 @@ function buildVendorPayablesReport({
         invoiceNumber: invoices.map(item => item.invoiceNumber || '').filter(Boolean).join(', '),
         invoiceFilename: invoices.map(item => item.attachmentFilename || '').filter(Boolean).join(', '),
         amountDue: amount,
-        pricingSource: invoiceAmount != null ? 'Invoice' : (
-          pricing.confidence === 'high' ? 'Known vendor rate' : 'Needs review'
+        pricingSource: useKnownAtlanticBlueRate ? 'Known vendor rate' : (
+          invoiceAmount != null ? 'Invoice' : (
+            pricing.confidence === 'high' ? 'Known vendor rate' : 'Needs review'
+          )
         ),
         pricingBreakdown: pricing.breakdown || [],
         status: rowStatus({
