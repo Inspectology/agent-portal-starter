@@ -2802,6 +2802,25 @@ function createPortal(options = {}) {
       return { start: iso[0], end: iso[1] };
     }
 
+    const numericUs = text.match(
+      /\b(\d{1,2})\/(\d{1,2})\/(\d{2}|20\d{2})\s*(?:-|–|—|to|through)\s*(\d{1,2})\/(\d{1,2})\/(\d{2}|20\d{2})\b/i
+    );
+    if (numericUs) {
+      const normalizeYear = value => {
+        const year = Number(value);
+        return String(year < 100 ? 2000 + year : year);
+      };
+      const start =
+        normalizeYear(numericUs[3]) + '-' +
+        String(Number(numericUs[1])).padStart(2, '0') + '-' +
+        String(Number(numericUs[2])).padStart(2, '0');
+      const end =
+        normalizeYear(numericUs[6]) + '-' +
+        String(Number(numericUs[4])).padStart(2, '0') + '-' +
+        String(Number(numericUs[5])).padStart(2, '0');
+      if (ivyPayablesDate(start) && ivyPayablesDate(end)) return { start, end };
+    }
+
     const sameMonth = text.match(
       /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})\s*(?:-|–|—|to|through)\s*(\d{1,2})\s*,?\s*(20\d{2})\b/i
     );
@@ -2824,13 +2843,28 @@ function createPortal(options = {}) {
     return null;
   }
 
-  function ivyVendorKeyFromPrompt(prompt) {
+  function ivyVendorKeysFromPrompt(prompt) {
     const text = String(prompt || '');
-    if (/\b(cambro(?:['’]?s)?|chimney)\b/i.test(text)) return 'chimney';
-    if (/\b(lynn\s*pest|lynn|termite|wdo)\b/i.test(text)) return 'termite';
-    if (/\b(atlantic\s*blue|well\s*yield|water\s*(?:quality|test|testing))\b/i.test(text)) return 'well_water';
-    if (/\b(young\s*septic|septic)\b/i.test(text)) return 'septic';
-    return '';
+    const keys = [];
+    if (/\b(cambro(?:['’]?s)?|chimney)\b/i.test(text)) keys.push('chimney');
+    if (/\b(lynn\s*pest|lynn|termite|wdo)\b/i.test(text)) keys.push('termite');
+    if (/\b(atlantic\s*blue|well\s*yield|well|water\s*(?:quality|test|testing)?)\b/i.test(text)) keys.push('well_water');
+    if (/\b(young\s*septic|septic)\b/i.test(text)) keys.push('septic');
+    return [...new Set(keys)];
+  }
+
+  function ivyVendorKeyFromPrompt(prompt) {
+    return ivyVendorKeysFromPrompt(prompt)[0] || '';
+  }
+
+  function ivyExplicitSingleVendorPayablesRequest(prompt) {
+    const text = String(prompt || '');
+    const keys = ivyVendorKeysFromPrompt(text);
+    if (keys.length !== 1) return '';
+    const explicitNarrow =
+      /\b(?:only|just)\b/i.test(text) ||
+      /\b(?:for|show|give|get|total)\s+(?:me\s+)?(?:only\s+|just\s+)?(?:cambro|lynn|atlantic\s*blue|young\s*septic)\b/i.test(text);
+    return explicitNarrow ? keys[0] : '';
   }
 
   function ivyLooksLikePayablesCommand(prompt) {
@@ -2841,11 +2875,10 @@ function createPortal(options = {}) {
       /\b(?:2|two)[- ]week\b/i.test(text);
 
     const vendorSpecificOperationalRequest =
-      Boolean(ivyVendorKeyFromPrompt(text)) &&
-      twoWeekPhrase &&
-      /\b(inspections?|jobs?|services?|total|owed|due|payable|payables|amount|report|summary)\b/i.test(text);
+      ivyVendorKeysFromPrompt(text).length > 0 &&
+      /\b(inspections?|jobs?|services?|invoice|invoices|invoiced|total|owed|due|payable|payables|amount|report|summary|payroll)\b/i.test(text);
 
-    return /vendor\s+payable|payables|vendor\s+payment|payroll\s+report|vendor\s+report|pay\s*period/i.test(text) ||
+    return /\bpayroll\b|vendor\s+payable|payables|vendor\s+payment|vendor\s+report|pay\s*period/i.test(text) ||
       (/\breport|summary\b/i.test(text) && twoWeekPhrase) ||
       vendorSpecificOperationalRequest;
   }
@@ -4463,12 +4496,30 @@ function createPortal(options = {}) {
             String(req.headers['x-vercel-oidc-token'] || '')
           );
 
-          const payablesRange = ivyLooksLikePayablesCommand(prompt)
-            ? ivyPayablesRangeFromPrompt(prompt)
+          const history = (Array.isArray(body.history) ? body.history : [])
+            .slice(-10)
+            .map(item => ({
+              role: item?.role === 'assistant' ? 'assistant' : 'user',
+              text: String(item?.text || '').trim().slice(0, 1200)
+            }))
+            .filter(item => item.text);
+          const conversationText = history
+            .map(item => item.text)
+            .concat(prompt)
+            .join('\n');
+
+          const looksLikePayables =
+            ivyLooksLikePayablesCommand(prompt) ||
+            (ivyLooksLikePayablesCommand(conversationText) &&
+              /\b(?:payroll|invoice|invoices|invoiced|vendor|payable|payables|total|amount|dates?\s+noted|period)\b/i.test(prompt));
+
+          const payablesRange = looksLikePayables
+            ? (ivyPayablesRangeFromPrompt(prompt) || ivyPayablesRangeFromPrompt(conversationText))
             : null;
+
           if (payablesRange) {
             const report = await ivyBuildPayables(token, payablesRange.start, payablesRange.end);
-            const vendorKey = ivyVendorKeyFromPrompt(prompt);
+            const vendorKey = ivyExplicitSingleVendorPayablesRequest(prompt);
             sendJson(res, 200, {
               status: 'ok',
               answer: vendorKey
@@ -4476,6 +4527,17 @@ function createPortal(options = {}) {
                 : ivyPayablesText(report),
               report,
               vendorKey: vendorKey || null,
+              payablesRange,
+              model: 'ivy-payables'
+            });
+            status = 200;
+            return;
+          }
+
+          if (looksLikePayables) {
+            sendJson(res, 200, {
+              status: 'ok',
+              answer: 'I can generate the full third-party vendor payroll report for Lynn Pest Management, Cambro Services, Atlantic Blue, and Young Septic. Tell me the payroll date range, for example 9/28/26 to 10/11/26.',
               model: 'ivy-payables'
             });
             status = 200;
