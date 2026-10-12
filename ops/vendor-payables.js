@@ -502,10 +502,10 @@ function expectedPrice(vendor, inspection) {
 
 function rowStatus({ reportReceived, invoiceReceived, amount, priceConfidence }) {
   if (!reportReceived) return 'Missing Report';
+  if (!invoiceReceived) return 'Missing Invoice';
   if (priceConfidence === 'review' || priceConfidence === 'unknown' || amount == null) {
     return 'Needs Review';
   }
-  if (!invoiceReceived) return 'Missing Invoice';
   return 'Ready to Pay';
 }
 
