@@ -125,15 +125,16 @@ function normalizeStreet(value) {
   // Vendors sometimes place the directional after the suffix, e.g. "240 Main St E".
   // Spectora commonly stores the same address as "240 E Main St".
   const trailingDirection = normalized.match(
-    /^(\d{1,6})\s+(.+?)\s+(aly|ave|blvd|cir|ct|dr|hwy|ln|pkwy|pl|rd|run|st|ter|trl|way)\s+([nsew])$/
+    /^(\d{1,6})\s+(.+?)\s+(aly|ave|blvd|cir|ct|dr|hwy|ln|pkwy|pl|rd|run|st|ter|trl|way)\s+([nsew])(?:\s+(\d{5}(?:-\d{4})?))?$/
   );
   if (trailingDirection) {
     normalized = [
       trailingDirection[1],
       trailingDirection[4],
       trailingDirection[2],
-      trailingDirection[3]
-    ].join(' ');
+      trailingDirection[3],
+      trailingDirection[5] || ''
+    ].filter(Boolean).join(' ');
   }
 
   return normalized;
