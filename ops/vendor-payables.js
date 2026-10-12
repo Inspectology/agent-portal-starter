@@ -125,13 +125,24 @@ function fuzzyStreetMatch(left, right) {
   return Boolean(leftCore && rightCore && editDistanceWithin(leftCore, rightCore, 1));
 }
 
+function streetCore(value) {
+  const normalized = normalizeStreet(value);
+  const match = normalized.match(
+    /^(\d{1,6})\s+(.+?)\s+(aly|ave|blvd|cir|ct|dr|hwy|ln|pkwy|pl|rd|run|st|ter|trl|way)\b/i
+  );
+  return match ? [match[1], match[2], match[3]].join(' ') : normalized;
+}
+
 function sameAddress(left, right) {
   const a = normalizeStreet(left);
   const b = normalizeStreet(right);
   const compactA = compactStreet(left);
   const compactB = compactStreet(right);
+  const coreA = streetCore(left);
+  const coreB = streetCore(right);
   return Boolean(a && b && (
     a === b ||
+    (coreA && coreB && coreA === coreB) ||
     a.includes(b) ||
     b.includes(a) ||
     (compactA && compactB && (
@@ -141,6 +152,88 @@ function sameAddress(left, right) {
     )) ||
     fuzzyStreetMatch(left, right)
   ));
+}
+
+
+function dateOnly(value) {
+  const text = String(value || '').trim();
+  const match = text.match(/^(\d{4}-\d{2}-\d{2})/);
+  return match ? match[1] : '';
+}
+
+function activityMatchesInspection(item, inspection, vendor) {
+  if (!sameVendor(item?.vendor, vendor?.company)) return false;
+  const inspectionId = String(inspection?.id || '').trim();
+  const itemInspectionId = String(item?.spectoraInspectionId || '').trim();
+  if (inspectionId && itemInspectionId && inspectionId === itemInspectionId) return true;
+  return sameAddress(item?.propertyAddress || item?.notes, inspectionAddress(inspection));
+}
+
+function latestVendorSchedule(activities, inspection, vendor) {
+  return activities
+    .filter(item =>
+      ['schedule', 'scheduled'].includes(normalize(item?.entryType)) &&
+      activityMatchesInspection(item, inspection, vendor)
+    )
+    .sort((a, b) => {
+      const left = Date.parse(a?.receivedAt || '') || 0;
+      const right = Date.parse(b?.receivedAt || '') || 0;
+      return right - left;
+    })[0] || null;
+}
+
+function scheduleServiceDate(schedule) {
+  return dateOnly(schedule?.inspectionDate || schedule?.serviceDate);
+}
+
+function vendorHasCompletionEvidence(inspection, vendor, activities, attachmentsByInspection) {
+  const hasActivity = activities.some(item =>
+    ['report', 'invoice'].includes(normalize(item?.entryType)) &&
+    activityMatchesInspection(item, inspection, vendor)
+  );
+  if (hasActivity) return true;
+
+  const inspectionId = String(inspection?.id || '');
+  const attachments = attachmentsByInspection[inspectionId] || [];
+  return attachments.some(item => attachmentMatchesVendor(item, vendor));
+}
+
+function vendorEligibleForPeriod(
+  inspection,
+  vendor,
+  activities,
+  attachmentsByInspection,
+  start,
+  end
+) {
+  const schedule = latestVendorSchedule(activities, inspection, vendor);
+  if (schedule) {
+    const status = normalize(schedule.status);
+    if (status === 'canceled' || status === 'cancelled') return false;
+    const serviceDate = scheduleServiceDate(schedule);
+    if (serviceDate) {
+      if (start && serviceDate < String(start)) return false;
+      if (end && serviceDate > String(end)) return false;
+      return true;
+    }
+  }
+
+  const attrs = inspection?.attributes || inspection || {};
+  if (attrs.canceled_at || attrs.cancel_reason) {
+    return vendorHasCompletionEvidence(
+      inspection,
+      vendor,
+      activities,
+      attachmentsByInspection
+    );
+  }
+
+  return true;
+}
+
+function vendorServiceDate(inspection, vendor, activities) {
+  const schedule = latestVendorSchedule(activities, inspection, vendor);
+  return scheduleServiceDate(schedule) || dateOnly(inspectionDate(inspection));
 }
 
 function attachmentMatchesVendor(attachment, vendor) {
@@ -235,6 +328,7 @@ function nearbyLynnInvoice(activities, report, usedInvoiceKeys) {
   for (const item of activities) {
     if (normalize(item.entryType) !== 'invoice') continue;
     if (!sameVendor(item.vendor, 'Lynn Pest Management')) continue;
+    if (normalizeStreet(item.propertyAddress || item.notes)) continue;
     const key = invoiceKey(item);
     if (usedInvoiceKeys.has(key)) continue;
 
@@ -384,29 +478,46 @@ function activityBackedInspections(inspections = [], activities = [], start, end
   const synthetic = [];
 
   for (const item of activities) {
-    if (normalize(item.entryType) !== 'report') continue;
-    const inspectionId = String(item.spectoraInspectionId || '').trim();
-    const inspectionDateValue = String(item.inspectionDate || '').trim();
-    const dateOnly = inspectionDateValue.slice(0, 10);
+    const entryType = normalize(item.entryType);
+    if (!['report', 'schedule', 'scheduled'].includes(entryType)) continue;
 
-    if (!inspectionId || !inspectionDateValue || !item.propertyAddress) continue;
-    if (knownIds.has(inspectionId)) continue;
-    if (start && dateOnly < String(start)) continue;
-    if (end && dateOnly > String(end)) continue;
+    const inspectionId = String(item.spectoraInspectionId || '').trim();
+    const isSchedule = entryType === 'schedule' || entryType === 'scheduled';
+    const activityDate = isSchedule
+      ? dateOnly(item.inspectionDate || item.serviceDate)
+      : dateOnly(item.inspectionDate);
+
+    if (!activityDate || !item.propertyAddress) continue;
+    if (start && activityDate < String(start)) continue;
+    if (end && activityDate > String(end)) continue;
+
+    const matchesExisting = inspections.some(inspection =>
+      (inspectionId && String(inspection?.id || '') === inspectionId) ||
+      sameAddress(inspectionAddress(inspection), item.propertyAddress)
+    );
+    if (matchesExisting) continue;
+    if (inspectionId && knownIds.has(inspectionId)) continue;
+
+    const syntheticId = inspectionId || [
+      'ivy',
+      normalize(item.vendor).replace(/[^a-z0-9]+/g, '-'),
+      streetCore(item.propertyAddress).replace(/[^a-z0-9]+/g, '-'),
+      activityDate
+    ].join('-');
 
     synthetic.push({
-      id: inspectionId,
+      id: syntheticId,
       attributes: {
         full_address: item.propertyAddress,
         property_address: item.propertyAddress,
-        datetime: inspectionDateValue,
-        service_names: '',
+        datetime: activityDate + 'T12:00:00-04:00',
+        service_names: item.service || '',
         service_add_on_names: '',
-        description: '',
+        description: item.notes || '',
         ivy_activity_backed: true
       }
     });
-    knownIds.add(inspectionId);
+    knownIds.add(syntheticId);
   }
 
   return synthetic;
@@ -433,6 +544,16 @@ function buildVendorPayablesReport({
       attachmentsByInspection
     );
     for (const vendor of vendors) {
+      if (!vendorEligibleForPeriod(
+        inspection,
+        vendor,
+        activities,
+        attachmentsByInspection,
+        start,
+        end
+      )) continue;
+
+      const serviceDate = vendorServiceDate(inspection, vendor, activities);
       const report = reportFor(activities, inspection, vendor, attachmentsByInspection);
       let invoices = directInvoicesFor(activities, inspection, vendor, usedInvoiceKeys);
 
@@ -481,6 +602,7 @@ function buildVendorPayablesReport({
       rows.push({
         inspectionId: String(inspection?.id || ''),
         inspectionDate: inspectionDate(inspection),
+        serviceDate,
         propertyAddress: inspectionAddress(inspection),
         vendorKey: vendor.key,
         vendor: vendor.company,
@@ -512,7 +634,7 @@ function buildVendorPayablesReport({
 
   rows.sort((a, b) =>
     a.vendor.localeCompare(b.vendor) ||
-    String(a.inspectionDate).localeCompare(String(b.inspectionDate)) ||
+    String(a.serviceDate || a.inspectionDate).localeCompare(String(b.serviceDate || b.inspectionDate)) ||
     a.propertyAddress.localeCompare(b.propertyAddress)
   );
 
@@ -555,5 +677,8 @@ module.exports = {
   inspectionDate,
   inspectionServiceText,
   priceAtlanticBlue,
-  priceYoungSeptic
+  priceYoungSeptic,
+  sameAddress,
+  vendorEligibleForPeriod,
+  vendorServiceDate
 };
