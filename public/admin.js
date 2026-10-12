@@ -170,7 +170,7 @@ function renderPayrollReport(report = {}) {
           el('strong', { text: row.propertyAddress || 'Property' }),
           el('span', {
             text: [
-              String(row.inspectionDate || '').slice(0, 10),
+              String(row.serviceDate || row.inspectionDate || '').slice(0, 10),
               row.amountDue == null ? 'Amount: Review' : 'Amount: ' + money(row.amountDue),
               row.status || ''
             ].filter(Boolean).join(' · ')
