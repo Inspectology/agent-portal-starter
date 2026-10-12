@@ -1005,6 +1005,30 @@ function assertCompanyScope(records, companyId) {
   }
 }
 
+function assertInspectionCompanyScope(records, companyId) {
+  for (const record of records) {
+    if (
+      Object.hasOwn(record?.attributes || {}, 'company_id') &&
+      String(record.attributes.company_id ?? '') !== String(companyId)
+    ) {
+      throw authError('Upstream inspection company attribute mismatch', 403);
+    }
+
+    const relationship = record?.relationships?.company;
+    if (
+      !relationship ||
+      !Object.hasOwn(relationship, 'data') ||
+      !relationship.data ||
+      Array.isArray(relationship.data) ||
+      typeof relationship.data !== 'object' ||
+      relationship.data.type !== 'company' ||
+      String(relationship.data.id ?? '') !== String(companyId)
+    ) {
+      throw authError('Upstream inspection company scope mismatch', 403);
+    }
+  }
+}
+
 function assertRecordId(record, expectedId, label) {
   if (!record || String(record.id ?? '') !== expectedId) throw authError(`Upstream ${label} identifier mismatch`, 403);
 }
