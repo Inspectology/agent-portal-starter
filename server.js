@@ -2091,6 +2091,88 @@ function createPortal(options = {}) {
     );
   }
 
+  async function ivyResendEmailStatus(emailId) {
+    const id = String(emailId || '').trim();
+    if (!id) return null;
+    const apiKey = String(config.operations.resendApiKey || '').trim();
+    if (!apiKey) throw authError('IVY email provider is not configured', 503);
+
+    const response = await requestJson(
+      'https://api.resend.com/emails/' + encodeURIComponent(id),
+      {
+        method: 'GET',
+        headers: {
+          Authorization: 'Bearer ' + apiKey,
+          Accept: 'application/json'
+        },
+        timeout: 15_000
+      },
+      null,
+      500_000
+    );
+
+    if (response.statusCode < 200 || response.statusCode > 299 || !response.json) {
+      const message = response.json?.message || response.json?.error ||
+        'Resend email status returned HTTP ' + response.statusCode;
+      throw new Error(message);
+    }
+
+    return {
+      id: String(response.json.id || id),
+      messageId: String(response.json.message_id || ''),
+      subject: String(response.json.subject || ''),
+      from: String(response.json.from || ''),
+      to: Array.isArray(response.json.to) ? response.json.to : [],
+      createdAt: String(response.json.created_at || ''),
+      lastEvent: String(response.json.last_event || '')
+    };
+  }
+
+  async function ivyLatestPayrollEmailStatus() {
+    const apiKey = String(config.operations.resendApiKey || '').trim();
+    if (!apiKey) throw authError('IVY email provider is not configured', 503);
+
+    const response = await requestJson(
+      'https://api.resend.com/emails?limit=100',
+      {
+        method: 'GET',
+        headers: {
+          Authorization: 'Bearer ' + apiKey,
+          Accept: 'application/json'
+        },
+        timeout: 15_000
+      },
+      null,
+      1_000_000
+    );
+
+    if (response.statusCode < 200 || response.statusCode > 299 || !response.json) {
+      const message = response.json?.message || response.json?.error ||
+        'Resend sent-email lookup returned HTTP ' + response.statusCode;
+      throw new Error(message);
+    }
+
+    const recipient = String(config.operations.payablesEmailTo || '').trim().toLowerCase();
+    const emails = Array.isArray(response.json.data) ? response.json.data : [];
+    const latest = emails.find(item => {
+      const subject = String(item?.subject || '');
+      const to = Array.isArray(item?.to) ? item.to.map(value => String(value).toLowerCase()) : [];
+      return subject.startsWith('IVY Vendor Payables |') && (!recipient || to.includes(recipient));
+    });
+
+    if (!latest) return null;
+
+    return {
+      id: String(latest.id || ''),
+      messageId: String(latest.message_id || ''),
+      subject: String(latest.subject || ''),
+      from: String(latest.from || ''),
+      to: Array.isArray(latest.to) ? latest.to : [],
+      createdAt: String(latest.created_at || ''),
+      lastEvent: String(latest.last_event || '')
+    };
+  }
+
 
 
 
@@ -2575,6 +2657,17 @@ function createPortal(options = {}) {
           return;
         }
 
+        if (req.method === 'GET' && pathname === '/api/admin/ivy/payables/email-status') {
+          const delivery = await ivyLatestPayrollEmailStatus();
+          sendJson(res, 200, {
+            status: 'ok',
+            recipient: config.operations.payablesEmailTo,
+            delivery
+          });
+          status = 200;
+          return;
+        }
+
         if (req.method === 'POST' && pathname === '/api/admin/ivy/payables/email') {
           const body = await readJsonBody(req, 12_000);
           const start = ivyPayablesDate(body.start);
@@ -2600,12 +2693,18 @@ function createPortal(options = {}) {
 
           const report = await ivyBuildPayables(token, start, end);
           const recipient = config.operations.payablesEmailTo;
-          await ivyEmailPayables(report, recipient);
+          const provider = await ivyEmailPayables(report, recipient);
+          const providerId = String(provider?.id || '');
+          const delivery = providerId
+            ? await ivyResendEmailStatus(providerId).catch(() => null)
+            : null;
           await ivyRecordPayablesRun(token, report, recipient);
 
           sendJson(res, 200, {
             status: 'sent',
             sentTo: recipient,
+            providerId,
+            delivery,
             report
           });
           status = 200;

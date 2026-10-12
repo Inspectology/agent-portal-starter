@@ -2628,6 +2628,45 @@ input:focus-visible,
   flex-wrap: wrap;
 }
 
+.payroll-delivery-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: #fff;
+}
+
+.payroll-delivery-bar > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.payroll-delivery-label {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+
+#payrollDeliveryStatus {
+  font-size: 10px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.payroll-delivery-good {
+  color: var(--success);
+}
+
+.payroll-delivery-bad {
+  color: var(--brand);
+}
+
 .payroll-results {
   display: grid;
   gap: 10px;
