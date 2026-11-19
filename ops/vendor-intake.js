@@ -323,7 +323,7 @@ function simpleReschedule(message = {}, topBody = '') {
   const receivedAt = String(message.receivedAt || '');
 
   const scheduled = body.match(
-    /\b(?:has been\s+|was\s+|is\s+)?(?:re)?scheduled\s+for\s+((?:tomorrow(?:\s+[A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?)?)|(?:[A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?)|(?:\d{1,2}\/\d{1,2}(?:\/\d{2,4})?))/i
+    /\b(?:has been\s+|was\s+|is\s+)?(?:scheduled|rescheduled|moved|changed)\s+(?:for|to|on)\s+((?:tomorrow(?:\s+[A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?)?)|(?:[A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?)|(?:\d{1,2}\/\d{1,2}(?:\/\d{2,4})?))/i
   );
   if (!scheduled) return null;
 
