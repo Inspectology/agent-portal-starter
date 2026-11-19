@@ -5,7 +5,7 @@ const { VENDORS, compactStreet, normalizeStreet } = require('./vendor-intake');
 const PAYROLL_VENDOR_KEYS = new Set(['termite', 'chimney', 'well_water', 'septic']);
 
 function payrollVendors() {
-  return payrollVendors().filter(vendor => PAYROLL_VENDOR_KEYS.has(vendor.key));
+  return VENDORS.filter(vendor => PAYROLL_VENDOR_KEYS.has(vendor.key));
 }
 
 function normalize(value) {
@@ -68,6 +68,13 @@ function reconciledVendorsForInspection(
   activities = [],
   attachmentsByInspection = {}
 ) {
+  const attrs = inspection?.attributes || inspection || {};
+  const lockedVendorKey = String(attrs.ivy_vendor_key || '').trim();
+  if (lockedVendorKey) {
+    const locked = payrollVendors().find(vendor => vendor.key === lockedVendorKey);
+    return locked ? [locked] : [];
+  }
+
   const byKey = new Map();
   for (const vendor of [
     ...expectedVendorsForInspection(inspection),
@@ -125,13 +132,24 @@ function fuzzyStreetMatch(left, right) {
   return Boolean(leftCore && rightCore && editDistanceWithin(leftCore, rightCore, 1));
 }
 
+function streetCore(value) {
+  const normalized = normalizeStreet(value);
+  const match = normalized.match(
+    /^(\d{1,6})\s+(.+?)\s+(aly|ave|blvd|cir|ct|dr|hwy|ln|pkwy|pl|rd|run|st|ter|trl|way)\b/i
+  );
+  return match ? [match[1], match[2], match[3]].join(' ') : normalized;
+}
+
 function sameAddress(left, right) {
   const a = normalizeStreet(left);
   const b = normalizeStreet(right);
   const compactA = compactStreet(left);
   const compactB = compactStreet(right);
+  const coreA = streetCore(left);
+  const coreB = streetCore(right);
   return Boolean(a && b && (
     a === b ||
+    (coreA && coreB && coreA === coreB) ||
     a.includes(b) ||
     b.includes(a) ||
     (compactA && compactB && (
@@ -141,6 +159,96 @@ function sameAddress(left, right) {
     )) ||
     fuzzyStreetMatch(left, right)
   ));
+}
+
+
+function dateOnly(value) {
+  const text = String(value || '').trim();
+  const match = text.match(/^(\d{4}-\d{2}-\d{2})/);
+  return match ? match[1] : '';
+}
+
+function activityMatchesInspection(item, inspection, vendor) {
+  if (!sameVendor(item?.vendor, vendor?.company)) return false;
+  const attrs = inspection?.attributes || inspection || {};
+  const inspectionId = String(inspection?.id || '').trim();
+  const originalInspectionId = String(attrs.ivy_spectora_inspection_id || '').trim();
+  const itemInspectionId = String(item?.spectoraInspectionId || '').trim();
+  if (
+    itemInspectionId &&
+    (
+      (inspectionId && inspectionId === itemInspectionId) ||
+      (originalInspectionId && originalInspectionId === itemInspectionId)
+    )
+  ) return true;
+  return sameAddress(item?.propertyAddress || item?.notes, inspectionAddress(inspection));
+}
+
+function latestVendorSchedule(activities, inspection, vendor) {
+  return activities
+    .filter(item =>
+      ['schedule', 'scheduled'].includes(normalize(item?.entryType)) &&
+      activityMatchesInspection(item, inspection, vendor)
+    )
+    .sort((a, b) => {
+      const left = Date.parse(a?.receivedAt || '') || 0;
+      const right = Date.parse(b?.receivedAt || '') || 0;
+      return right - left;
+    })[0] || null;
+}
+
+function scheduleServiceDate(schedule) {
+  return dateOnly(schedule?.inspectionDate || schedule?.serviceDate);
+}
+
+function vendorHasCompletionEvidence(inspection, vendor, activities, attachmentsByInspection) {
+  const hasActivity = activities.some(item =>
+    ['report', 'invoice'].includes(normalize(item?.entryType)) &&
+    activityMatchesInspection(item, inspection, vendor)
+  );
+  if (hasActivity) return true;
+
+  const inspectionId = String(inspection?.id || '');
+  const attachments = attachmentsByInspection[inspectionId] || [];
+  return attachments.some(item => attachmentMatchesVendor(item, vendor));
+}
+
+function vendorEligibleForPeriod(
+  inspection,
+  vendor,
+  activities,
+  attachmentsByInspection,
+  start,
+  end
+) {
+  const schedule = latestVendorSchedule(activities, inspection, vendor);
+  if (schedule) {
+    const status = normalize(schedule.status);
+    if (status === 'canceled' || status === 'cancelled') return false;
+    const serviceDate = scheduleServiceDate(schedule);
+    if (serviceDate) {
+      if (start && serviceDate < String(start)) return false;
+      if (end && serviceDate > String(end)) return false;
+      return true;
+    }
+  }
+
+  const attrs = inspection?.attributes || inspection || {};
+  if (attrs.canceled_at || attrs.cancel_reason) {
+    return vendorHasCompletionEvidence(
+      inspection,
+      vendor,
+      activities,
+      attachmentsByInspection
+    );
+  }
+
+  return true;
+}
+
+function vendorServiceDate(inspection, vendor, activities) {
+  const schedule = latestVendorSchedule(activities, inspection, vendor);
+  return scheduleServiceDate(schedule) || dateOnly(inspectionDate(inspection));
 }
 
 function attachmentMatchesVendor(attachment, vendor) {
@@ -199,9 +307,17 @@ function reportFor(activities, inspection, vendor, attachmentsByInspection = {})
 }
 
 function invoiceKey(item) {
+  const invoiceNumber = String(item?.invoiceNumber || '').trim();
+  if (invoiceNumber && !/^(?:from|should)$/i.test(invoiceNumber)) {
+    return [
+      normalize(item?.vendor),
+      'invoice',
+      invoiceNumber.toLowerCase()
+    ].join('|');
+  }
   return [
+    normalize(item?.vendor),
     String(item?.sourceEmailId || ''),
-    String(item?.invoiceNumber || ''),
     String(item?.attachmentFilename || ''),
     normalizeStreet(item?.propertyAddress || '')
   ].join('|');
@@ -209,13 +325,26 @@ function invoiceKey(item) {
 
 function directInvoicesFor(activities, inspection, vendor, usedInvoiceKeys) {
   const address = inspectionAddress(inspection);
+  const attrs = inspection?.attributes || inspection || {};
+  const syntheticScheduleCutoff =
+    attrs.ivy_activity_backed &&
+    attrs.ivy_activity_kind === 'schedule'
+      ? Date.parse(attrs.ivy_activity_received_at || '') || null
+      : null;
+
   const matches = [];
   for (const item of activities) {
     if (normalize(item.entryType) !== 'invoice') continue;
     if (!sameVendor(item.vendor, vendor.company)) continue;
+    if (!sameAddress(item.propertyAddress || item.notes, address)) continue;
+
+    if (syntheticScheduleCutoff != null) {
+      const invoiceTime = Date.parse(item.receivedAt || '') || null;
+      if (invoiceTime != null && invoiceTime < syntheticScheduleCutoff) continue;
+    }
+
     const key = invoiceKey(item);
     if (usedInvoiceKeys.has(key)) continue;
-    if (!sameAddress(item.propertyAddress || item.notes, address)) continue;
     usedInvoiceKeys.add(key);
     matches.push(item);
   }
@@ -235,6 +364,7 @@ function nearbyLynnInvoice(activities, report, usedInvoiceKeys) {
   for (const item of activities) {
     if (normalize(item.entryType) !== 'invoice') continue;
     if (!sameVendor(item.vendor, 'Lynn Pest Management')) continue;
+    if (normalizeStreet(item.propertyAddress || item.notes)) continue;
     const key = invoiceKey(item);
     if (usedInvoiceKeys.has(key)) continue;
 
@@ -257,7 +387,12 @@ function priceAtlanticBlue(serviceText) {
 
   const add = (label, amount) => items.push({ label, amount });
 
-  if (/baltimore\s*county[^|,;]*yield|\bbc\s*yield\b/i.test(text)) {
+  if (
+    /baltimore\s*county[^|,;]*yield/i.test(text) ||
+    /yield[^|,;]*baltimore\s*county/i.test(text) ||
+    /\bbc\s*yield\b/i.test(text) ||
+    /yield[^|,;]*\bbc\b/i.test(text)
+  ) {
     add('Baltimore County Yield', 435);
   } else if (/3\s*(?:hr|hour)[^|,;]*yield|yield[^|,;]*3\s*(?:hr|hour)/i.test(text)) {
     add('3 Hr Yield', 345);
@@ -367,41 +502,71 @@ function expectedPrice(vendor, inspection) {
 
 function rowStatus({ reportReceived, invoiceReceived, amount, priceConfidence }) {
   if (!reportReceived) return 'Missing Report';
+  if (!invoiceReceived) return 'Missing Invoice';
   if (priceConfidence === 'review' || priceConfidence === 'unknown' || amount == null) {
     return 'Needs Review';
   }
-  if (!invoiceReceived) return 'Missing Invoice';
   return 'Ready to Pay';
 }
 
+function payrollVendorFromActivity(item) {
+  return payrollVendors().find(vendor => sameVendor(item?.vendor, vendor.company)) || null;
+}
+
 function activityBackedInspections(inspections = [], activities = [], start, end) {
-  const knownIds = new Set(inspections.map(item => String(item?.id || '')).filter(Boolean));
   const synthetic = [];
+  const syntheticKeys = new Set();
 
   for (const item of activities) {
-    if (normalize(item.entryType) !== 'report') continue;
-    const inspectionId = String(item.spectoraInspectionId || '').trim();
-    const inspectionDateValue = String(item.inspectionDate || '').trim();
-    const dateOnly = inspectionDateValue.slice(0, 10);
+    const entryType = normalize(item.entryType);
+    if (!['report', 'schedule', 'scheduled'].includes(entryType)) continue;
 
-    if (!inspectionId || !inspectionDateValue || !item.propertyAddress) continue;
-    if (knownIds.has(inspectionId)) continue;
-    if (start && dateOnly < String(start)) continue;
-    if (end && dateOnly > String(end)) continue;
+    const vendor = payrollVendorFromActivity(item);
+    if (!vendor) continue;
+
+    const isSchedule = entryType === 'schedule' || entryType === 'scheduled';
+    const activityDate = isSchedule
+      ? dateOnly(item.inspectionDate || item.serviceDate)
+      : dateOnly(item.inspectionDate);
+
+    if (!activityDate || !item.propertyAddress) continue;
+    if (start && activityDate < String(start)) continue;
+    if (end && activityDate > String(end)) continue;
+
+    const matchesExisting = inspections.some(inspection =>
+      sameAddress(inspectionAddress(inspection), item.propertyAddress)
+    );
+    if (matchesExisting) continue;
+
+    const key = [
+      vendor.key,
+      streetCore(item.propertyAddress),
+      activityDate
+    ].join('|');
+    if (syntheticKeys.has(key)) continue;
+    syntheticKeys.add(key);
 
     synthetic.push({
-      id: inspectionId,
+      id: [
+        'ivy',
+        vendor.key,
+        streetCore(item.propertyAddress).replace(/[^a-z0-9]+/g, '-'),
+        activityDate
+      ].join('-'),
       attributes: {
         full_address: item.propertyAddress,
         property_address: item.propertyAddress,
-        datetime: inspectionDateValue,
-        service_names: '',
+        datetime: activityDate + 'T12:00:00-04:00',
+        service_names: item.service || vendor.service,
         service_add_on_names: '',
-        description: '',
-        ivy_activity_backed: true
+        description: item.notes || '',
+        ivy_activity_backed: true,
+        ivy_vendor_key: vendor.key,
+        ivy_activity_kind: isSchedule ? 'schedule' : 'report',
+        ivy_activity_received_at: String(item.receivedAt || ''),
+        ivy_spectora_inspection_id: String(item.spectoraInspectionId || '')
       }
     });
-    knownIds.add(inspectionId);
   }
 
   return synthetic;
@@ -428,6 +593,16 @@ function buildVendorPayablesReport({
       attachmentsByInspection
     );
     for (const vendor of vendors) {
+      if (!vendorEligibleForPeriod(
+        inspection,
+        vendor,
+        activities,
+        attachmentsByInspection,
+        start,
+        end
+      )) continue;
+
+      const serviceDate = vendorServiceDate(inspection, vendor, activities);
       const report = reportFor(activities, inspection, vendor, attachmentsByInspection);
       let invoices = directInvoicesFor(activities, inspection, vendor, usedInvoiceKeys);
 
@@ -444,8 +619,20 @@ function buildVendorPayablesReport({
         ? invoiceAmounts.reduce((sum, value) => sum + value, 0)
         : null;
 
-      let amount = invoiceAmount != null ? invoiceAmount : pricing.amount;
-      let priceConfidence = invoiceAmount != null ? 'invoice' : pricing.confidence;
+      const useKnownAtlanticBlueRate =
+        vendor.key === 'well_water' &&
+        pricing.confidence === 'high' &&
+        pricing.amount != null &&
+        (
+          invoiceAmount == null ||
+          invoiceAmount <= Number(pricing.amount) + 25
+        );
+      let amount = useKnownAtlanticBlueRate
+        ? pricing.amount
+        : (invoiceAmount != null ? invoiceAmount : pricing.amount);
+      let priceConfidence = useKnownAtlanticBlueRate
+        ? 'high'
+        : (invoiceAmount != null ? 'invoice' : pricing.confidence);
       const notes = [pricing.note || ''];
 
       if (
@@ -464,6 +651,7 @@ function buildVendorPayablesReport({
       rows.push({
         inspectionId: String(inspection?.id || ''),
         inspectionDate: inspectionDate(inspection),
+        serviceDate,
         propertyAddress: inspectionAddress(inspection),
         vendorKey: vendor.key,
         vendor: vendor.company,
@@ -476,8 +664,10 @@ function buildVendorPayablesReport({
         invoiceNumber: invoices.map(item => item.invoiceNumber || '').filter(Boolean).join(', '),
         invoiceFilename: invoices.map(item => item.attachmentFilename || '').filter(Boolean).join(', '),
         amountDue: amount,
-        pricingSource: invoiceAmount != null ? 'Invoice' : (
-          pricing.confidence === 'high' ? 'Known vendor rate' : 'Needs review'
+        pricingSource: useKnownAtlanticBlueRate ? 'Known vendor rate' : (
+          invoiceAmount != null ? 'Invoice' : (
+            pricing.confidence === 'high' ? 'Known vendor rate' : 'Needs review'
+          )
         ),
         pricingBreakdown: pricing.breakdown || [],
         status: rowStatus({
@@ -493,7 +683,7 @@ function buildVendorPayablesReport({
 
   rows.sort((a, b) =>
     a.vendor.localeCompare(b.vendor) ||
-    String(a.inspectionDate).localeCompare(String(b.inspectionDate)) ||
+    String(a.serviceDate || a.inspectionDate).localeCompare(String(b.serviceDate || b.inspectionDate)) ||
     a.propertyAddress.localeCompare(b.propertyAddress)
   );
 
@@ -536,5 +726,8 @@ module.exports = {
   inspectionDate,
   inspectionServiceText,
   priceAtlanticBlue,
-  priceYoungSeptic
+  priceYoungSeptic,
+  sameAddress,
+  vendorEligibleForPeriod,
+  vendorServiceDate
 };
