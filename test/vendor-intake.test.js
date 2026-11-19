@@ -6,6 +6,7 @@ const {
   classifyDocument,
   classifyVendor,
   createVendorIntakePlan,
+  extractBookingSchedules,
   extractInvoiceData,
   extractStreetCandidates,
   normalizeStreet,
@@ -205,4 +206,92 @@ test('extracts Young Septic style job address from invoice PDF text', () => {
   assert.equal(invoice.amount, 325);
   assert.equal(invoice.invoiceNumber, '43338484');
   assert.match(invoice.propertyAddress, /11315 John Carroll Road/i);
+});
+
+
+test('extracts Atlantic Blue and Young Septic dates from booking confirmation', () => {
+  const schedules = extractBookingSchedules({
+    subject: 'Booking Confirmation - 3805 Devonshire Road',
+    receivedAt: '2026-10-19T18:04:08Z',
+    body: [
+      'Hello Riley & Haley Aufmuth,',
+      '',
+      'You have appointments with Atlantic Blue and Young Septic scheduled for the property at 3805 Devonshire Road, Hampstead, MD 21074.',
+      '',
+      'Appointment Details:',
+      '',
+      'Atlantic Blue',
+      '',
+      'Date: Thursday, October 22, 2026 Arrival Window: 12:00pm -2:00pm',
+      '',
+      '-Well Yield [1-hour]',
+      '-EPA Standard Potability Profile Water Test',
+      '',
+      'Young Septic',
+      '',
+      'Date: Tuesday, October 27, 2026 Arrival Window: 8:00am -10:00am',
+      '',
+      '-Septic Inspection'
+    ].join('\n')
+  });
+
+  assert.equal(schedules.length, 2);
+  assert.equal(schedules[0].vendorKey, 'well_water');
+  assert.equal(schedules[0].serviceDate, '2026-10-22');
+  assert.equal(schedules[1].vendorKey, 'septic');
+  assert.equal(schedules[1].serviceDate, '2026-10-27');
+  assert.match(schedules[0].propertyAddress, /3805 Devonshire Road/i);
+});
+
+test('uses updated booking date and ignores older quoted confirmation', () => {
+  const schedules = extractBookingSchedules({
+    subject: 'Re: Booking Confirmation - 3805 Devonshire Road',
+    receivedAt: '2026-10-19T18:25:13Z',
+    body: [
+      'Hello Riley & Haley Aufmuth,',
+      '',
+      'You have appointments with Atlantic Blue and Young Septic scheduled for the property at 3805 Devonshire Road, Hampstead, MD 21074.',
+      '',
+      'Appointment Details:',
+      '',
+      'Atlantic Blue',
+      '',
+      'Date: Thursday, October 22, 2026 Arrival Window: 12:00pm -2:00pm',
+      '',
+      'Young Septic',
+      '',
+      'Date: Wednesday, October 21, 2026 Arrival Window: 8:00am -10:00am',
+      '',
+      'From: Kaitlyn Higdon <Kaitlyn@atlanticblue.net>',
+      'Subject: Booking Confirmation - 3805 Devonshire Road',
+      'Young Septic',
+      'Date: Tuesday, October 27, 2026 Arrival Window: 8:00am -10:00am'
+    ].join('\n')
+  });
+
+  const septic = schedules.find(item => item.vendorKey === 'septic');
+  assert.equal(septic.serviceDate, '2026-10-21');
+});
+
+test('extracts simple Atlantic Blue reschedule from booking reply', () => {
+  const schedules = extractBookingSchedules({
+    subject: 'Re: Booking Confirmation - 17505 Pretty Boy Dam Road',
+    receivedAt: '2026-09-30T12:41:09Z',
+    body: [
+      'Good morning,',
+      '',
+      'This water sample has been scheduled for tomorrow October 1st between 12pm and 2pm!',
+      '',
+      'Thank you,',
+      'Kaitlyn Higdon',
+      '',
+      'From: Sarah Borrero Petr <sarahborrero@gmail.com>',
+      'Date: Tuesday, September 29, 2026'
+    ].join('\n')
+  });
+
+  assert.equal(schedules.length, 1);
+  assert.equal(schedules[0].vendorKey, 'well_water');
+  assert.equal(schedules[0].serviceDate, '2026-10-01');
+  assert.match(schedules[0].propertyAddress, /17505 Pretty Boy Dam Road/i);
 });
