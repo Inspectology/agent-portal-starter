@@ -18,6 +18,7 @@ const {
   classifyDocument,
   classifyVendor,
   duplicateAttachment,
+  extractBookingSchedules,
   extractInvoiceData,
   extractStreetCandidates,
   listSpectoraAttachmentPage,
@@ -2984,7 +2985,7 @@ function createPortal(options = {}) {
         notes: String(row[14] || '')
       }))
       .filter(item => item.receivedAt || item.vendor || item.status)
-      .filter(item => !['ignored', 'coordination'].includes(
+      .filter(item => !['ignored', 'coordination', 'schedule', 'scheduled'].includes(
         String(item.entryType || '').toLowerCase()
       ))
       .reverse();
@@ -3214,21 +3215,58 @@ function createPortal(options = {}) {
       !hasReportOrInvoiceAttachment;
 
     if (isBookingCoordination) {
+      const schedules = extractBookingSchedules(message);
+
       if (!existingKeys.has(defaultKey)) {
-        await appendVendorActivity(sheetsToken, config.operations, {
-          receivedAt: message.receivedAt,
-          entryType: 'Coordination',
-          vendor: '',
-          service: 'Vendor Coordination',
-          sourceEmailId: message.sourceEmailId,
-          attachmentFilename: defaultFilename,
-          status: 'No Action',
-          notes: 'Booking confirmation or reply with no actionable report/invoice attachment.'
-        });
+        if (schedules.length) {
+          for (const schedule of schedules) {
+            const details = Array.isArray(schedule.serviceDetails) && schedule.serviceDetails.length
+              ? ' Services: ' + schedule.serviceDetails.join('; ') + '.'
+              : '';
+            const window = schedule.arrivalWindow
+              ? ' Arrival window: ' + schedule.arrivalWindow + '.'
+              : '';
+
+            await appendVendorActivity(sheetsToken, config.operations, {
+              receivedAt: message.receivedAt,
+              entryType: 'Schedule',
+              vendor: schedule.vendor,
+              service: schedule.service,
+              propertyAddress: schedule.propertyAddress,
+              inspectionDate: schedule.serviceDate,
+              sourceEmailId: message.sourceEmailId,
+              attachmentFilename: defaultFilename,
+              status: schedule.status || 'Scheduled',
+              notes:
+                'Atlantic Blue booking schedule received. Latest schedule date controls payroll cycle.' +
+                window +
+                details
+            });
+          }
+        } else {
+          await appendVendorActivity(sheetsToken, config.operations, {
+            receivedAt: message.receivedAt,
+            entryType: 'Coordination',
+            vendor: '',
+            service: 'Vendor Coordination',
+            sourceEmailId: message.sourceEmailId,
+            attachmentFilename: defaultFilename,
+            status: 'No Action',
+            notes: 'Booking confirmation or reply contained no confidently parsed vendor schedule.'
+          });
+        }
       }
+
       return {
         action: 'ignore',
-        reason: 'Vendor coordination message; no action required'
+        reason: schedules.length
+          ? 'Vendor schedule recorded for payroll timing'
+          : 'Vendor coordination message; no payroll schedule parsed',
+        schedules: schedules.map(item => ({
+          vendor: item.vendor,
+          propertyAddress: item.propertyAddress,
+          serviceDate: item.serviceDate
+        }))
       };
     }
 
