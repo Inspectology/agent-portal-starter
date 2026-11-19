@@ -278,11 +278,22 @@ function attachmentMatchesVendor(attachment, vendor) {
 function reportFor(activities, inspection, vendor, attachmentsByInspection = {}) {
   const inspectionId = String(inspection?.id || '');
   const address = inspectionAddress(inspection);
+  const attrs = inspection?.attributes || inspection || {};
+  const syntheticScheduleCutoff =
+    attrs.ivy_activity_backed &&
+    attrs.ivy_activity_kind === 'schedule'
+      ? Date.parse(attrs.ivy_activity_received_at || '') || null
+      : null;
 
-  const reports = activities.filter(item =>
-    normalize(item.entryType) === 'report' &&
-    sameVendor(item.vendor, vendor.company)
-  );
+  const reports = activities.filter(item => {
+    if (normalize(item.entryType) !== 'report') return false;
+    if (!sameVendor(item.vendor, vendor.company)) return false;
+    if (syntheticScheduleCutoff != null) {
+      const reportTime = Date.parse(item.receivedAt || '') || null;
+      if (reportTime != null && reportTime < syntheticScheduleCutoff) return false;
+    }
+    return true;
+  });
 
   const ledgerReport = reports.find(item =>
     inspectionId && String(item.spectoraInspectionId || '') === inspectionId

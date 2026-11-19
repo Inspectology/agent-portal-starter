@@ -510,3 +510,60 @@ test('Lynn missing invoice is labeled Missing Invoice instead of Needs Review', 
   assert.ok(row);
   assert.equal(row.status, 'Missing Invoice');
 });
+
+
+test('new Atlantic Blue schedule does not reuse an older report from a prior payroll cycle', () => {
+  const report = buildVendorPayablesReport({
+    inspections: [],
+    activities: [
+      {
+        receivedAt: '2026-11-09T18:48:46Z',
+        entryType: 'Schedule',
+        vendor: 'Atlantic Blue',
+        service: 'Well / Water Testing',
+        propertyAddress: '16205 Frederick Road, Woodbine, MD 21797',
+        inspectionDate: '2026-11-10',
+        status: 'Scheduled'
+      },
+      {
+        receivedAt: '2026-11-04T19:32:33Z',
+        entryType: 'Report',
+        vendor: 'Atlantic Blue',
+        service: 'Well / Water Testing',
+        propertyAddress: '16205 Frederick Rd, Lisbon, MD 21797',
+        attachmentFilename: '16205 FREDERICK ROAD WATER TEST RESULTS.pdf',
+        status: 'Matched'
+      },
+      {
+        receivedAt: '2026-11-03T20:17:50Z',
+        entryType: 'Invoice',
+        vendor: 'Atlantic Blue',
+        service: 'Well / Water Testing',
+        propertyAddress: '16205 Frederick Road, Woodbine, MD 21797 USA',
+        vendorCost: 345,
+        invoiceNumber: '446948424',
+        status: 'Received'
+      },
+      {
+        receivedAt: '2026-11-10T19:44:12Z',
+        entryType: 'Invoice',
+        vendor: 'Atlantic Blue',
+        service: 'Well / Water Testing',
+        propertyAddress: '16205 Frederick Road, Woodbine, MD 21797 USA',
+        vendorCost: 1025,
+        invoiceNumber: '522485884',
+        status: 'Received'
+      }
+    ],
+    start: '2026-11-09',
+    end: '2026-11-22'
+  });
+
+  const row = report.rows.find(entry => entry.vendor === 'Atlantic Blue');
+  assert.ok(row);
+  assert.equal(row.serviceDate, '2026-11-10');
+  assert.equal(row.invoiceCount, 1);
+  assert.equal(row.amountDue, 1025);
+  assert.equal(row.reportReceived, false);
+  assert.equal(row.status, 'Missing Report');
+});
