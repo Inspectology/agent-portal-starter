@@ -305,15 +305,15 @@ function reportFor(activities, inspection, vendor, attachmentsByInspection = {})
   const attachment = attachments.find(item => attachmentMatchesVendor(item, vendor));
   if (!attachment) return null;
 
-  const attrs = attachment?.attributes || {};
+  const attachmentAttrs = attachment?.attributes || {};
   return {
     entryType: 'Report',
     vendor: vendor.company,
     propertyAddress: address,
     spectoraInspectionId: inspectionId,
-    attachmentFilename: attrs.file_file_name || attrs.name || '',
+    attachmentFilename: attachmentAttrs.file_file_name || attachmentAttrs.name || '',
     status: 'Attached in Spectora',
-    receivedAt: attrs.created_at || ''
+    receivedAt: attachmentAttrs.created_at || ''
   };
 }
 
