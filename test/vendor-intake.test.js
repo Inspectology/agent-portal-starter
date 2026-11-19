@@ -295,3 +295,23 @@ test('extracts simple Atlantic Blue reschedule from booking reply', () => {
   assert.equal(schedules[0].serviceDate, '2026-10-01');
   assert.match(schedules[0].propertyAddress, /17505 Pretty Boy Dam Road/i);
 });
+
+
+test('extracts moved-to vendor date from booking reply', () => {
+  const schedules = extractBookingSchedules({
+    subject: 'Re: Booking Confirmation - 1404 Allen Way',
+    receivedAt: '2026-11-18T14:00:00Z',
+    body: [
+      'The septic inspection has been moved to Monday November 23, 2026.',
+      '',
+      'From: Kaitlyn Higdon <Kaitlyn@atlanticblue.net>',
+      'Young Septic',
+      'Date: Tuesday, November 17, 2026'
+    ].join('\n')
+  });
+
+  assert.equal(schedules.length, 1);
+  assert.equal(schedules[0].vendorKey, 'septic');
+  assert.equal(schedules[0].serviceDate, '2026-11-23');
+  assert.match(schedules[0].propertyAddress, /1404 Allen Way/i);
+});
