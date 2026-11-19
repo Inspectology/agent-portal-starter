@@ -185,6 +185,212 @@ function classifyVendor(message = {}) {
   };
 }
 
+function bookingTopBody(body = '') {
+  const source = String(body || '').replace(/\r\n/g, '\n');
+  const cutPatterns = [
+    /\nFrom:\s/i,
+    /\nOn .+? wrote:\s*\n/i,
+    /\n-{2,}\s*Original Message\s*-{2,}/i
+  ];
+  let cut = source.length;
+  for (const pattern of cutPatterns) {
+    const match = pattern.exec(source);
+    if (match && match.index < cut) cut = match.index;
+  }
+  return source.slice(0, cut).trim();
+}
+
+function normalizeBookingDate(text = '', receivedAt = '') {
+  let value = String(text || '')
+    .trim()
+    .replace(/\b(\d{1,2})(?:st|nd|rd|th)\b/gi, '$1')
+    .replace(/\s+/g, ' ');
+
+  if (!value) return '';
+
+  if (/^tomorrow$/i.test(value)) {
+    const base = Date.parse(receivedAt || '');
+    if (!Number.isFinite(base)) return '';
+    const date = new Date(base);
+    date.setUTCDate(date.getUTCDate() + 1);
+    return date.toISOString().slice(0, 10);
+  }
+
+  value = value.replace(/^tomorrow\s+/i, '');
+
+  const numeric = value.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/);
+  if (numeric) {
+    let year = numeric[3] ? Number(numeric[3]) : new Date(receivedAt || Date.now()).getUTCFullYear();
+    if (year < 100) year += 2000;
+    const month = Number(numeric[1]);
+    const day = Number(numeric[2]);
+    const candidate =
+      String(year).padStart(4, '0') + '-' +
+      String(month).padStart(2, '0') + '-' +
+      String(day).padStart(2, '0');
+    const parsed = Date.parse(candidate + 'T12:00:00Z');
+    return Number.isFinite(parsed) ? candidate : '';
+  }
+
+  const months = {
+    jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3,
+    apr: 4, april: 4, may: 5, jun: 6, june: 6, jul: 7, july: 7,
+    aug: 8, august: 8, sep: 9, sept: 9, september: 9, oct: 10,
+    october: 10, nov: 11, november: 11, dec: 12, december: 12
+  };
+  const named = value.match(
+    /\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday,?\s+)?(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\s+(\d{1,2})(?:,?\s+(\d{4}))?\b/i
+  );
+  if (!named) return '';
+
+  const month = months[String(named[1]).toLowerCase()];
+  const day = Number(named[2]);
+  let year = named[3] ? Number(named[3]) : new Date(receivedAt || Date.now()).getUTCFullYear();
+
+  if (!named[3] && receivedAt) {
+    const received = new Date(receivedAt);
+    const receivedMonth = received.getUTCMonth() + 1;
+    if (month < receivedMonth - 6) year += 1;
+    if (month > receivedMonth + 6) year -= 1;
+  }
+
+  const candidate =
+    String(year).padStart(4, '0') + '-' +
+    String(month).padStart(2, '0') + '-' +
+    String(day).padStart(2, '0');
+  const parsed = Date.parse(candidate + 'T12:00:00Z');
+  return Number.isFinite(parsed) ? candidate : '';
+}
+
+function bookingPropertyAddress(message = {}, topBody = '') {
+  const subject = String(message.subject || '');
+  const subjectAddress = subject.match(
+    /booking confirmation\s*-\s*(\d{1,6}\s+.+)$/i
+  )?.[1]?.trim() || '';
+
+  const propertyLine = String(topBody || '').match(
+    /scheduled for the property at\s*[\r\n]*([^\r\n]+(?:[\r\n]+[^\r\n]+)?)/i
+  )?.[1]?.replace(/\s+/g, ' ').trim() || '';
+
+  const bodyCandidate = extractStreetCandidates({
+    subject: propertyLine,
+    body: propertyLine,
+    filenames: []
+  })[0]?.raw || '';
+
+  return bodyCandidate || subjectAddress ||
+    extractStreetCandidates({
+      subject,
+      body: topBody,
+      filenames: []
+    })[0]?.raw || '';
+}
+
+function bookingSection(topBody = '', vendorLabel = '') {
+  const lines = String(topBody || '').replace(/\r\n/g, '\n').split('\n');
+  const label = String(vendorLabel || '').toLowerCase();
+
+  for (let i = 0; i < lines.length; i += 1) {
+    if (lines[i].trim().toLowerCase() !== label) continue;
+
+    const window = lines.slice(i + 1, i + 14);
+    const dateIndex = window.findIndex(line => /^\s*Date\s*:/i.test(line));
+    if (dateIndex < 0) continue;
+
+    const dateLine = window[dateIndex].trim();
+    const dateText = dateLine
+      .replace(/^Date\s*:\s*/i, '')
+      .replace(/\s+Arrival Window\s*:[\s\S]*$/i, '')
+      .trim();
+    const arrivalWindow = dateLine.match(/Arrival Window\s*:\s*(.+)$/i)?.[1]?.trim() || '';
+
+    const serviceLines = [];
+    for (const line of window.slice(dateIndex + 1)) {
+      const clean = line.trim();
+      if (!clean) continue;
+      if (/^(Atlantic Blue|Young Septic|To discuss results|Thank you|From:)\b/i.test(clean)) break;
+      if (/^[-–•]/.test(clean)) serviceLines.push(clean.replace(/^[-–•]\s*/, ''));
+    }
+
+    return { dateText, arrivalWindow, serviceLines };
+  }
+
+  return null;
+}
+
+function simpleReschedule(message = {}, topBody = '') {
+  const body = String(topBody || '');
+  const receivedAt = String(message.receivedAt || '');
+
+  const scheduled = body.match(
+    /\b(?:has been\s+|was\s+|is\s+)?(?:re)?scheduled\s+for\s+((?:tomorrow(?:\s+[A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?)?)|(?:[A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?)|(?:\d{1,2}\/\d{1,2}(?:\/\d{2,4})?))/i
+  );
+  if (!scheduled) return null;
+
+  const serviceDate = normalizeBookingDate(scheduled[1], receivedAt);
+  if (!serviceDate) return null;
+
+  let vendorKey = '';
+  if (/\bwater\s+(?:sample|quality|test)|\bwell\b/i.test(body)) vendorKey = 'well_water';
+  else if (/\bseptic\b/i.test(body)) vendorKey = 'septic';
+  if (!vendorKey) return null;
+
+  const arrivalWindow =
+    body.match(/\bbetween\s+([^\n.!]+?)(?:[.!]|$)/i)?.[1]?.trim() ||
+    body.match(/\barrival window\s*:\s*([^\n]+)/i)?.[1]?.trim() ||
+    '';
+
+  return { vendorKey, serviceDate, arrivalWindow };
+}
+
+function extractBookingSchedules(message = {}) {
+  const subject = String(message.subject || '').trim();
+  if (!/^(?:re:\s*)?booking confirmation\b/i.test(subject)) return [];
+
+  const topBody = bookingTopBody(message.body);
+  const propertyAddress = bookingPropertyAddress(message, topBody);
+  if (!propertyAddress) return [];
+
+  const definitions = [
+    { vendorKey: 'well_water', vendor: 'Atlantic Blue', service: 'Well / Water Testing' },
+    { vendorKey: 'septic', vendor: 'Young Septic', service: 'Septic' }
+  ];
+
+  const schedules = [];
+  for (const definition of definitions) {
+    const section = bookingSection(topBody, definition.vendor);
+    if (!section) continue;
+    const serviceDate = normalizeBookingDate(section.dateText, message.receivedAt);
+    if (!serviceDate) continue;
+
+    schedules.push({
+      ...definition,
+      propertyAddress,
+      serviceDate,
+      arrivalWindow: section.arrivalWindow,
+      serviceDetails: section.serviceLines,
+      status: 'Scheduled'
+    });
+  }
+
+  if (!schedules.length) {
+    const simple = simpleReschedule(message, topBody);
+    if (simple) {
+      const definition = definitions.find(item => item.vendorKey === simple.vendorKey);
+      schedules.push({
+        ...definition,
+        propertyAddress,
+        serviceDate: simple.serviceDate,
+        arrivalWindow: simple.arrivalWindow,
+        serviceDetails: [],
+        status: 'Scheduled'
+      });
+    }
+  }
+
+  return schedules;
+}
+
 function classifyDocument(message = {}, vendor = null) {
   const subject = String(message.subject || '');
   const body = String(message.body || '');
@@ -721,6 +927,7 @@ module.exports = {
   classifyVendor,
   compactStreet,
   createVendorIntakePlan,
+  extractBookingSchedules,
   extractInvoiceData,
   duplicateAttachment,
   extractStreetCandidates,
